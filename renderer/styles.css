@@ -445,7 +445,14 @@ button {
   letter-spacing: 0.3px;
 }
 
-.badge-similarity.badge-high {
+.badge-similarity.badge-loading {
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+}
   background: var(--success-soft);
   color: var(--success);
   border: 1px solid rgba(56, 199, 147, 0.4);
