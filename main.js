@@ -32,6 +32,7 @@ if (!gotSingleInstanceLock) {
 }
 
 const scraper = require('./scraper');
+const XLSX = require('xlsx');
 const { SESSION_PARTITION, USER_AGENT } = require('./constants');
 
 Menu.setApplicationMenu(null);
@@ -142,6 +143,34 @@ ipcMain.handle('dialog:pick-file', async () => {
   );
 
   return { filePath, terms };
+});
+
+ipcMain.handle('dialog:export-excel', async (_event, payload) => {
+  if (!mainWindow) return { cancelled: true };
+  const defaultName = (payload && payload.defaultName) || 'akakce-sonuclar.xlsx';
+  const rows = (payload && payload.rows) || [];
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Sonuçları Excel olarak dışa aktar',
+    defaultPath: defaultName,
+    filters: [
+      { name: 'Excel Çalışma Kitabı', extensions: ['xlsx'] },
+      { name: 'Tüm dosyalar', extensions: ['*'] },
+    ],
+  });
+  if (result.canceled || !result.filePath) return { cancelled: true };
+  let filePath = result.filePath;
+  if (!filePath.toLowerCase().endsWith('.xlsx')) {
+    filePath += '.xlsx';
+  }
+  try {
+    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Sonuçlar');
+    XLSX.writeFile(workbook, filePath);
+    return { ok: true, filePath };
+  } catch (e) {
+    return { error: e.message };
+  }
 });
 
 // ---------------------------------------------------------------------------

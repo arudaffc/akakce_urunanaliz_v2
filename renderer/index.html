@@ -29,6 +29,10 @@
             <span class="nav-icon">&#128203;</span>
             <span>Çoklu Ürün Tarama</span>
           </button>
+          <button class="nav-btn" data-view="settings" type="button">
+            <span class="nav-icon">&#9881;</span>
+            <span>Ayarlar</span>
+          </button>
         </nav>
         <div class="sidebar-footer">Akakçe Ürün Analiz</div>
       </aside>
@@ -49,10 +53,48 @@
               placeholder="Aranan Değer (örn. DK-HD-CV14L150A90)"
               autocomplete="off"
             />
-            <button type="submit" class="btn btn-primary" id="single-search-btn">Ara</button>
+            <div class="search-actions">
+              <button type="submit" class="btn btn-primary" id="single-search-btn">Ara</button>
+              <button type="button" class="btn btn-secondary" id="single-pause-btn" hidden>Durdur</button>
+              <button type="button" class="btn btn-secondary" id="single-resume-btn" hidden>Devam Et</button>
+              <button type="button" class="btn btn-secondary btn-danger-outline" id="single-cancel-btn" hidden>İptal Et</button>
+            </div>
           </form>
 
+          <div class="scan-options">
+            <label class="toolbar-check">
+              <input type="checkbox" id="opt-skip-low-content" checked />
+              <span id="opt-skip-low-content-label">Düşük yakınlıkta detay taramasını atla (başlık &lt; %50)</span>
+            </label>
+          </div>
+
           <div class="scan-summary" id="single-summary" hidden></div>
+
+          <div class="results-toolbar" id="single-toolbar" hidden>
+            <div class="toolbar-group">
+              <label class="toolbar-label" for="single-sort">Sırala</label>
+              <select id="single-sort" class="toolbar-select">
+                <option value="rank">Akakçe sırası</option>
+                <option value="similarity-desc">Yakınlık (yüksek → düşük)</option>
+                <option value="price-asc">Fiyat (düşük → yüksek)</option>
+                <option value="price-desc">Fiyat (yüksek → düşük)</option>
+              </select>
+            </div>
+            <div class="toolbar-group">
+              <label class="toolbar-label" for="single-filter-sim">Yakınlık filtresi</label>
+              <select id="single-filter-sim" class="toolbar-select">
+                <option value="all">Tümü</option>
+                <option value="80">%80 ve üzeri</option>
+                <option value="50">%50 ve üzeri</option>
+              </select>
+            </div>
+            <label class="toolbar-check">
+              <input type="checkbox" id="single-filter-multi-seller" />
+              Yalnızca çok satıcılı
+            </label>
+            <button type="button" class="btn btn-secondary btn-sm" id="single-export-btn">Dışa Aktar (Excel)</button>
+          </div>
+
           <div class="results-list" id="single-results"></div>
         </section>
 
@@ -67,14 +109,89 @@
             <button type="button" class="btn btn-secondary" id="multi-pick-file-btn">Dosya Seç (.txt / .csv)</button>
             <span class="multi-file-info" id="multi-file-info">Dosya seçilmedi</span>
             <button type="button" class="btn btn-primary" id="multi-start-btn" disabled>Taramayı Başlat</button>
+            <button type="button" class="btn btn-secondary" id="multi-pause-btn" hidden>Durdur</button>
+            <button type="button" class="btn btn-secondary" id="multi-resume-btn" hidden>Devam Et</button>
+            <button type="button" class="btn btn-secondary btn-danger-outline" id="multi-cancel-btn" hidden>İptal Et</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="multi-export-btn" hidden>Dışa Aktar (Excel)</button>
           </div>
 
           <div class="multi-progress" id="multi-progress" hidden>
             <div class="progress-track"><div class="progress-fill" id="multi-progress-fill"></div></div>
-            <span class="progress-label" id="multi-progress-label"></span>
+            <div class="progress-meta">
+              <span class="progress-label" id="multi-progress-label"></span>
+              <span class="progress-eta" id="multi-eta"></span>
+            </div>
+          </div>
+
+          <div class="multi-overview" id="multi-overview" hidden>
+            <h2 class="overview-title">Özet Tablo</h2>
+            <div class="overview-table-wrap">
+              <table class="overview-table">
+                <thead>
+                  <tr>
+                    <th>Terim</th>
+                    <th>En İyi Eşleşme</th>
+                    <th>Sıra</th>
+                    <th>Yakınlık</th>
+                    <th>Fiyat</th>
+                    <th>Satıcı</th>
+                    <th>Durum</th>
+                  </tr>
+                </thead>
+                <tbody id="multi-overview-body"></tbody>
+              </table>
+            </div>
           </div>
 
           <div class="scan-groups" id="multi-groups"></div>
+        </section>
+
+        <!-- Ayarlar -->
+        <section class="view" id="view-settings" hidden>
+          <header class="view-header">
+            <h1>Ayarlar</h1>
+            <p class="view-subtitle">Tarama ve liste varsayılanlarını buradan yapılandırın. Değişiklikler kaydedildiğinde sonraki aramalarda geçerli olur.</p>
+          </header>
+
+          <form class="settings-form" id="settings-form">
+            <div class="settings-field">
+              <label class="settings-label" for="setting-max-products">Taranacak Ürün Sayısı</label>
+              <input type="number" id="setting-max-products" class="settings-input" min="1" max="40" step="1" required />
+              <span class="settings-hint">Varsayılan: 10 (en fazla 40)</span>
+            </div>
+
+            <div class="settings-field">
+              <label class="settings-label" for="setting-max-sellers">Satıcılar Sayısı</label>
+              <input type="number" id="setting-max-sellers" class="settings-input" min="1" max="30" step="1" required />
+              <span class="settings-hint">Varsayılan: 5 (en fazla 30)</span>
+            </div>
+
+            <div class="settings-field">
+              <label class="settings-label" for="setting-skip-threshold">Düşük Yakınlıkta Detay Tarama Atla</label>
+              <div class="settings-input-suffix">
+                <input type="number" id="setting-skip-threshold" class="settings-input" min="0" max="100" step="1" required />
+                <span class="settings-suffix">%</span>
+              </div>
+              <span class="settings-hint">Varsayılan: %50 — başlık yakınlığı bu değerin altındaki ürünlerde detay taraması yapılmaz</span>
+            </div>
+
+            <div class="settings-field">
+              <label class="settings-label" for="setting-default-sort">Varsayılan Sıralama</label>
+              <select id="setting-default-sort" class="settings-select">
+                <option value="rank">Akakçe Sırası</option>
+                <option value="similarity-desc">Yakınlık (yüksek → düşük)</option>
+                <option value="price-asc">Fiyat (düşük → yüksek)</option>
+                <option value="price-desc">Fiyat (yüksek → düşük)</option>
+              </select>
+              <span class="settings-hint">Varsayılan: Akakçe Sırası — her yeni aramada sıralama buna döner</span>
+            </div>
+
+            <div class="settings-actions">
+              <button type="submit" class="btn btn-primary" id="settings-save-btn">Kaydet</button>
+              <button type="button" class="btn btn-secondary" id="settings-reset-btn">Varsayılana Dön</button>
+            </div>
+            <p class="settings-status" id="settings-status" hidden></p>
+          </form>
         </section>
 
         <!-- Detay: uygulama içi gömülü tarayıcı -->
@@ -100,10 +217,6 @@
             <span class="result-rank"></span>
             <span class="result-title"></span>
             <span class="badge badge-similarity"></span>
-          </div>
-          <div class="result-meta">
-            <span class="result-price"></span>
-            <span class="result-seller-count"></span>
           </div>
           <button type="button" class="btn btn-outline btn-detail">Detay</button>
         </div>

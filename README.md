@@ -1,8 +1,7 @@
 # Akakçe Ürün Analiz
 
-Akakçe.com arama sonuçlarını tarayan, aranan ürünün sıralanıp sıralanmadığını,
-hangi başka ürün ve satıcıların çıktığını gösteren bir Electron masaüstü
-uygulaması.
+Akakçe.com arama sonuçlarını tarayan, aranan ürünün hangi sırada çıktığını, yakınlık
+skorunu ve satıcı/fiyat bilgilerini gösteren Electron masaüstü uygulaması.
 
 ## Kurulum
 
@@ -16,40 +15,74 @@ npm install
 npm start
 ```
 
+> Aynı anda birden fazla `npm start` çalıştırmayın; Chromium önbellek çakışmasına yol açabilir.
+
 ## Özellikler
 
-- **Sol menü / sağ içerik** düzeni: *Tek Ürün Tarama* ve *Çoklu Ürün Tarama*.
-- **Tek Ürün Tarama**: "Aranan Değer" girilir, `akakce.com/arama/?q=...`
-  sonuçları listelenir. İlk sonuç aranan değerle eşleşiyorsa "Eşleşti" rozeti
-  gösterilir; diğer ürünler ve bulundukları satıcı sayısı da listelenir.
-- Her sonucun **sağında**, o ürünün satıcı listesi ("1. Satıcı", "2. Satıcı",
-  ...) ayrı bir ürün detay taramasıyla otomatik olarak doldurulur.
-- **Detay** butonuna basıldığında gerçek akakce.com sayfası, uygulama
-  içinde gömülü bir tarayıcı panelinde ("Sonuçlara Dön" ile geri dönülebilir)
-  açılır — harici bir tarayıcıya çıkılmaz.
-- **Çoklu Ürün Tarama**: `.txt`/`.csv` dosyasından (satır satır ya da ilk
-  sütun) birden çok arama terimi içe aktarılır, sırayla taranır ve her terim
-  için Tek Ürün Tarama ile aynı detaylı sonuç + satıcı tablosu bir bölüm
-  (accordion) altında gösterilir.
-- Koyu tema, tüm pencere (özel başlık çubuğu dahil) için tutarlı uygulanır.
+### Tek Ürün Tarama
+
+- Arama terimi girilir, Akakçe sonuçları listelenir.
+- Her sonuç için **yakınlık rozeti** (başlık ve gerektiğinde detay içeriği).
+- Başlıkta eşleşen kelimeler vurgulanır (`<mark>`).
+- Sağ panelde satıcı listesi ve fiyatlar (tek teklifli ve çok satıcılı ürünler dahil).
+- **Detay** ile ürün sayfası uygulama içi gömülü tarayıcıda açılır.
+- Araç çubuğu: sıralama, yakınlık filtresi, yalnızca çok satıcılı filtre, **Excel dışa aktarma**.
+- Tarama kontrolü: **Durdur / Devam Et / İptal Et** (satıcı taraması sırasında).
+- Düşük yakınlıkta detay taramasını atlama (eşik ayarlardan yapılandırılır).
+- Her yeni aramada filtreler varsayılan değerlere döner.
+
+### Çoklu Ürün Tarama
+
+- `.txt` / `.csv` dosyasından terim listesi yüklenir.
+- Her terim için ayrı sonuç bölümü ve satıcı tablosu.
+- Üstte **özet tablo** (terim, en iyi eşleşme, sıra, yakınlık, fiyat, satıcı, durum).
+- İlerleme çubuğu, ETA ve Durdur / Devam Et / İptal Et.
+- Toplu **Excel dışa aktarma**.
+
+### Ayarlar
+
+Sol menüden **Ayarlar** sayfası:
+
+| Ayar | Varsayılan | Açıklama |
+|------|------------|----------|
+| Taranacak ürün sayısı | 10 | Her aramada işlenecek maksimum sonuç (1–40) |
+| Satıcılar sayısı | 5 | Listede ve Excel'de gösterilecek satıcı (1–30) |
+| Düşük yakınlıkta detay atlama | %50 | Başlık yakınlığı bu değerin altındaysa detay taraması yapılmaz |
+| Varsayılan sıralama | Akakçe sırası | Her yeni aramada uygulanan sıralama |
+
+Ayarlar `localStorage` ile kalıcıdır.
 
 ## Mimari
 
-- `main.js` — Electron ana süreç: pencere/`BrowserView` yönetimi, IPC uçları.
-- `preload.js` — Renderer'a güvenli `window.akakceAPI` köprüsü.
-- `scraper.js` — Gizli bir `BrowserWindow` (gerçek Chromium motoru) ile
-  Cloudflare doğrulamasını bekleyip akakce.com arama/ürün detay sayfalarını
-  DOM üzerinden okuyan modül.
-- `renderer/` — Arayüz (HTML/CSS/JS, framework yok).
+| Dosya | Görev |
+|-------|--------|
+| `main.js` | Ana süreç: pencere, `BrowserView`, IPC, Excel dışa aktarma |
+| `preload.js` | `window.akakceAPI` köprüsü |
+| `scraper.js` | Gizli Chromium penceresi ile arama/satıcı verisi çekme |
+| `constants.js` | Oturum, user-agent, origin sabitleri |
+| `renderer/` | Arayüz (HTML / CSS / vanilla JS) |
 
-## Cloudflare Notu
+### Veri kaynağı
 
-Uygulama, akakce.com'un Cloudflare korumasını gerçek bir Chromium motoruyla
-(sıradan bir tarayıcı gibi JS çalıştırarak) ve kalıcı bir oturum (`cf_clearance`
-çerezinin saklandığı `persist:akakce-shared` partition'ı) kullanarak aşmaya
-çalışır. Bu %100 garanti değildir; Cloudflare ek doğrulama isterse arayüzde
-"Cloudflare doğrulaması geçilemedi" uyarısı gösterilir ve tekrar denenebilir.
+Satıcı ve ürün bilgisi öncelikle Akakçe sayfalarına gömülü **Astro island JSON**
+verisinden okunur (`initialPgList`, `spotPg`, arama `productList`). DOM seçicileri
+yedek stratejidir. Tek teklifli ürünlerde satıcı adı arama kartının DOM'undan
+(`kargo` sonrası metin, mağaza butonları, bilinen satıcı kimlikleri) tamamlanır.
 
-Akakçe'nin HTML yapısı değişirse `scraper.js` içindeki `EXTRACT_SEARCH_RESULTS_JS`
-ve `EXTRACT_SELLERS_JS` seçicilerinin güncel sayfa yapısına göre güncellenmesi
-gerekebilir.
+## Cloudflare
+
+Uygulama gerçek Chromium motoru ve kalıcı oturum (`persist:akakce-shared`) kullanır.
+Cloudflare ek doğrulama isterse arayüzde uyarı gösterilir; scraper otomatik yeniden
+dener (en fazla 2 kez).
+
+Akakçe HTML/JSON yapısı değişirse `scraper.js` içindeki `EXTRACT_SEARCH_RESULTS_JS`
+ve `EXTRACT_SELLERS_JS` betiklerinin güncellenmesi gerekebilir.
+
+## Geliştirme notları
+
+- Paketleme (`.exe`) henüz yapılandırılmamıştır; çalıştırma `npm start` ile yapılır.
+- Bağımlılıklar: `electron`, `xlsx`.
+
+## Lisans
+
+`UNLICENSED` — özel kullanım.

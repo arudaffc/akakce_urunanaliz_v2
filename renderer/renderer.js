@@ -1,7 +1,155 @@
 (function () {
   const api = window.akakceAPI;
-  const MAX_SELLERS_SHOWN = 5;
   const MATCH_THRESHOLD = 80;
+  const SETTINGS_STORAGE_KEY = 'akakce-app-settings';
+  const DEFAULT_SETTINGS = {
+    maxProducts: 10,
+    maxSellers: 5,
+    skipTitleThreshold: 50,
+    defaultSort: 'rank',
+  };
+
+  let appSettings = loadAppSettings();
+
+  function clampNumber(value, min, max, fallback) {
+    const num = parseInt(value, 10);
+    if (!Number.isFinite(num)) return fallback;
+    return Math.min(max, Math.max(min, num));
+  }
+
+  function loadAppSettings() {
+    try {
+      const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+      if (!raw) return { ...DEFAULT_SETTINGS };
+      const parsed = JSON.parse(raw);
+      return {
+        maxProducts: clampNumber(parsed.maxProducts, 1, 40, DEFAULT_SETTINGS.maxProducts),
+        maxSellers: clampNumber(parsed.maxSellers, 1, 30, DEFAULT_SETTINGS.maxSellers),
+        skipTitleThreshold: clampNumber(parsed.skipTitleThreshold, 0, 100, DEFAULT_SETTINGS.skipTitleThreshold),
+        defaultSort: ['rank', 'similarity-desc', 'price-asc', 'price-desc'].includes(parsed.defaultSort)
+          ? parsed.defaultSort
+          : DEFAULT_SETTINGS.defaultSort,
+      };
+    } catch (e) {
+      return { ...DEFAULT_SETTINGS };
+    }
+  }
+
+  function saveAppSettings(nextSettings) {
+    appSettings = {
+      maxProducts: clampNumber(nextSettings.maxProducts, 1, 40, DEFAULT_SETTINGS.maxProducts),
+      maxSellers: clampNumber(nextSettings.maxSellers, 1, 30, DEFAULT_SETTINGS.maxSellers),
+      skipTitleThreshold: clampNumber(nextSettings.skipTitleThreshold, 0, 100, DEFAULT_SETTINGS.skipTitleThreshold),
+      defaultSort: ['rank', 'similarity-desc', 'price-asc', 'price-desc'].includes(nextSettings.defaultSort)
+        ? nextSettings.defaultSort
+        : DEFAULT_SETTINGS.defaultSort,
+    };
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(appSettings));
+    applyAppSettingsToUi();
+  }
+
+  function updateSkipOptionLabel() {
+    const labelEl = document.getElementById('opt-skip-low-content-label');
+    if (labelEl) {
+      labelEl.textContent = `Düşük yakınlıkta detay taramasını atla (başlık < %${getSkipTitleThreshold()})`;
+    }
+  }
+
+  function reapplySkipRulesToResults(results) {
+    if (!Array.isArray(results)) return;
+    for (const result of results) {
+      if (shouldSkipDetailScan(result)) {
+        markDetailScanSkipped(result);
+      } else {
+        result.sellersSkipped = false;
+      }
+    }
+  }
+
+  function applyAppSettingsToUi() {
+    updateSkipOptionLabel();
+    if (settingsMaxProductsEl) settingsMaxProductsEl.value = String(appSettings.maxProducts);
+    if (settingsMaxSellersEl) settingsMaxSellersEl.value = String(appSettings.maxSellers);
+    if (settingsSkipThresholdEl) settingsSkipThresholdEl.value = String(appSettings.skipTitleThreshold);
+    if (settingsDefaultSortEl) settingsDefaultSortEl.value = appSettings.defaultSort;
+  }
+
+  function readSettingsFormValues() {
+    return {
+      maxProducts: settingsMaxProductsEl ? settingsMaxProductsEl.value : DEFAULT_SETTINGS.maxProducts,
+      maxSellers: settingsMaxSellersEl ? settingsMaxSellersEl.value : DEFAULT_SETTINGS.maxSellers,
+      skipTitleThreshold: settingsSkipThresholdEl ? settingsSkipThresholdEl.value : DEFAULT_SETTINGS.skipTitleThreshold,
+      defaultSort: settingsDefaultSortEl ? settingsDefaultSortEl.value : DEFAULT_SETTINGS.defaultSort,
+    };
+  }
+
+  function showSettingsStatus(message, isError) {
+    if (!settingsStatusEl) return;
+    settingsStatusEl.textContent = message;
+    settingsStatusEl.hidden = !message;
+    settingsStatusEl.classList.toggle('is-error', !!isError);
+  }
+
+  function getMaxProducts() {
+    return appSettings.maxProducts;
+  }
+
+  function getMaxSellersShown() {
+    return appSettings.maxSellers;
+  }
+
+  function getSkipTitleThreshold() {
+    return appSettings.skipTitleThreshold;
+  }
+
+  function getDefaultSort() {
+    return appSettings.defaultSort;
+  }
+
+  const scanOptions = {
+    skipLowContentScan: true,
+  };
+
+  let singleScanContext = null;
+  let multiOutcomes = [];
+  let singleScanControl = null;
+  let multiScanControl = null;
+
+  function createScanController() {
+    return { paused: false, cancelled: false };
+  }
+
+  async function awaitScanControl(ctrl) {
+    if (!ctrl) return;
+    while (ctrl.paused && !ctrl.cancelled) {
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+
+  function isScanCancelled(ctrl) {
+    return !!(ctrl && ctrl.cancelled);
+  }
+
+  function updateScanControlUi(ctrl, buttons) {
+    const { primaryBtn, pauseBtn, resumeBtn, cancelBtn, extraDisable } = buttons;
+    const running = !!ctrl && !ctrl.cancelled;
+    if (primaryBtn) primaryBtn.disabled = running;
+    if (extraDisable) extraDisable.forEach((el) => { if (el) el.disabled = running; });
+    if (!running) {
+      if (pauseBtn) pauseBtn.hidden = true;
+      if (resumeBtn) resumeBtn.hidden = true;
+      if (cancelBtn) cancelBtn.hidden = true;
+      return;
+    }
+    if (cancelBtn) cancelBtn.hidden = false;
+    if (ctrl.paused) {
+      if (pauseBtn) pauseBtn.hidden = true;
+      if (resumeBtn) resumeBtn.hidden = false;
+    } else {
+      if (pauseBtn) pauseBtn.hidden = false;
+      if (resumeBtn) resumeBtn.hidden = true;
+    }
+  }
 
   // ------------------------------------------------------------------ //
   // Yardımcılar
@@ -17,12 +165,147 @@
       .replace(/ü/g, 'u')
       .replace(/ö/g, 'o')
       .replace(/ç/g, 'c')
+      .replace(
+        /(\d+(?:[.,]\d+)?)\s*(ghz|mhz|gb|tb|mb|mm|cm|inch|w|v|mah)\b/g,
+        (_, num, unit) => num.replace(/[.,]/g, '') + unit
+      )
       .replace(/[^a-z0-9]+/g, ' ')
       .trim();
   }
 
-  // Levenshtein (düzenleme) uzaklığı — iki dize arasında birini diğerine
-  // çevirmek için gereken minimum ekleme/silme/değiştirme sayısı.
+  function tokenizeForSimilarity(text) {
+    return normalize(text).split(' ').filter(Boolean);
+  }
+
+  function isSignificantToken(token) {
+    if (!token) return false;
+    if (token.length >= 3) return true;
+    return /[a-z]\d|\d[a-z]/.test(token);
+  }
+
+  function tokenWeight(token) {
+    if (/\d{3,}/.test(token)) return 3;
+    if (/\d/.test(token) && /[a-z]/.test(token)) return 2.5;
+    if (/\d/.test(token)) return 2;
+    if (token.length >= 4) return 1.2;
+    return 1;
+  }
+
+  function isSafeFuzzyTokenMatch(a, b) {
+    if (a === b) return true;
+    const shorter = a.length <= b.length ? a : b;
+    const longer = a.length <= b.length ? b : a;
+    if (shorter.length < 3) return false;
+    if (/^\d+$/.test(shorter)) return false;
+    if (/\d/.test(shorter) && /\d/.test(longer)) {
+      if (!longer.includes(shorter)) return false;
+      return shorter.length / longer.length >= 0.65;
+    }
+    if (shorter.length >= 4 && longer.includes(shorter)) return true;
+    if (a.length >= 4 && b.length >= 4 && (a.includes(b) || b.includes(a))) return true;
+    return false;
+  }
+
+  function tokenMatches(termToken, titleTokens) {
+    if (titleTokens.includes(termToken)) return true;
+    if (!isSignificantToken(termToken)) return false;
+    if (/^\d+$/.test(termToken)) return false;
+    return titleTokens.some((tt) => isSafeFuzzyTokenMatch(termToken, tt));
+  }
+
+  function weightedTokenOverlapScore(termTokens, titleTokens) {
+    const significant = termTokens.filter(isSignificantToken);
+    if (significant.length === 0) return 0;
+    let matchedWeight = 0;
+    let totalWeight = 0;
+    for (const token of significant) {
+      const weight = tokenWeight(token);
+      totalWeight += weight;
+      if (tokenMatches(token, titleTokens)) matchedWeight += weight;
+    }
+    return totalWeight > 0 ? matchedWeight / totalWeight : 0;
+  }
+
+  function escapeHtml(text) {
+    return String(text || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function parsePriceNumber(priceText) {
+    if (!priceText) return NaN;
+    const cleaned = String(priceText).replace(/[^\d,.-]/g, '').replace(/\./g, '').replace(',', '.');
+    const num = parseFloat(cleaned);
+    return Number.isFinite(num) ? num : NaN;
+  }
+
+  function formatDuration(ms) {
+    if (!Number.isFinite(ms) || ms <= 0) return '';
+    const totalSec = Math.ceil(ms / 1000);
+    const min = Math.floor(totalSec / 60);
+    const sec = totalSec % 60;
+    if (min <= 0) return `~${sec} sn kaldı`;
+    return `~${min} dk ${sec} sn kaldı`;
+  }
+
+  function sellerName(seller) {
+    if (!seller) return '';
+    return typeof seller === 'string' ? seller : seller.name || '';
+  }
+
+  function sellerPrice(seller) {
+    if (!seller || typeof seller === 'string') return '';
+    return seller.price || '';
+  }
+
+  function mergeRanges(ranges) {
+    if (ranges.length === 0) return [];
+    ranges.sort((a, b) => a[0] - b[0]);
+    const merged = [ranges[0]];
+    for (let i = 1; i < ranges.length; i++) {
+      const last = merged[merged.length - 1];
+      const cur = ranges[i];
+      if (cur[0] <= last[1]) {
+        last[1] = Math.max(last[1], cur[1]);
+      } else {
+        merged.push(cur);
+      }
+    }
+    return merged;
+  }
+
+  function highlightTitle(term, title) {
+    const safeTitle = title || '(Başlık bulunamadı)';
+    if (!term || !safeTitle) return escapeHtml(safeTitle);
+    const tokens = [...new Set(term.split(/\s+/).map((t) => t.trim()).filter((t) => t.length >= 2))];
+    if (tokens.length === 0) return escapeHtml(safeTitle);
+
+    const lowerTitle = safeTitle.toLocaleLowerCase('tr-TR');
+    const ranges = [];
+    for (const token of tokens) {
+      const lowerToken = token.toLocaleLowerCase('tr-TR');
+      let idx = 0;
+      while ((idx = lowerTitle.indexOf(lowerToken, idx)) !== -1) {
+        ranges.push([idx, idx + token.length]);
+        idx += 1;
+      }
+    }
+    const merged = mergeRanges(ranges);
+    if (merged.length === 0) return escapeHtml(safeTitle);
+
+    let html = '';
+    let cursor = 0;
+    for (const [start, end] of merged) {
+      html += escapeHtml(safeTitle.slice(cursor, start));
+      html += `<mark>${escapeHtml(safeTitle.slice(start, end))}</mark>`;
+      cursor = end;
+    }
+    html += escapeHtml(safeTitle.slice(cursor));
+    return html;
+  }
+
   function levenshteinDistance(a, b) {
     const m = a.length;
     const n = b.length;
@@ -48,46 +331,45 @@
     return 1 - levenshteinDistance(a, b) / maxLen;
   }
 
-  // Aranan terimin token'larının (kelime/kod parçalarının) başlıkta ne
-  // ölçüde geçtiğini ölçer (tam veya alt-dize olarak).
   function tokenOverlapScore(termTokens, titleTokens) {
-    if (termTokens.length === 0) return 0;
-    let matched = 0;
-    for (const t of termTokens) {
-      if (titleTokens.includes(t)) {
-        matched += 1;
-      } else if (titleTokens.some((tt) => tt.length > 1 && (tt.includes(t) || t.includes(tt)))) {
-        matched += 0.7;
-      }
-    }
-    return Math.min(1, matched / termTokens.length);
+    return weightedTokenOverlapScore(termTokens, titleTokens);
   }
 
-  // Aranan değer ile bir sonuç başlığı arasındaki yakınlık derecesini
-  // 0-100 arası bir yüzde olarak hesaplar (tam içerme, token örtüşmesi ve
-  // en iyi hizalanan alt-dizenin düzenleme uzaklığı benzerliğinin birleşimi).
   function computeSimilarity(term, title) {
     const nTerm = normalize(term);
     const nTitle = normalize(title);
     if (!nTerm || !nTitle) return 0;
     if (nTitle.includes(nTerm)) return 100;
 
-    const termTokens = nTerm.split(' ').filter(Boolean);
-    const titleTokens = nTitle.split(' ').filter(Boolean);
-    const tokenScore = tokenOverlapScore(termTokens, titleTokens);
+    const termTokens = tokenizeForSimilarity(term);
+    const titleTokens = tokenizeForSimilarity(title);
+    const tokenScore = weightedTokenOverlapScore(termTokens, titleTokens);
 
+    const termCore = termTokens.filter(isSignificantToken).join(' ');
+    const titleCore = titleTokens.filter(isSignificantToken).join(' ');
     let bestWindowScore = 0;
-    if (nTitle.length <= nTerm.length) {
-      bestWindowScore = levenshteinSimilarity(nTerm, nTitle);
-    } else {
-      const winLen = nTerm.length;
-      for (let i = 0; i + winLen <= nTitle.length; i++) {
-        const score = levenshteinSimilarity(nTerm, nTitle.slice(i, i + winLen));
-        if (score > bestWindowScore) bestWindowScore = score;
+    if (termCore && titleCore) {
+      if (titleCore.length <= termCore.length) {
+        bestWindowScore = levenshteinSimilarity(termCore, titleCore);
+      } else {
+        const winLen = termCore.length;
+        for (let i = 0; i + winLen <= titleCore.length; i++) {
+          const score = levenshteinSimilarity(termCore, titleCore.slice(i, i + winLen));
+          if (score > bestWindowScore) bestWindowScore = score;
+        }
       }
     }
 
-    const combined = Math.max(tokenScore * 0.9, 0.5 * tokenScore + 0.5 * bestWindowScore);
+    let combined = Math.max(tokenScore * 0.95, 0.55 * tokenScore + 0.45 * bestWindowScore);
+
+    const modelNumbers = termTokens.filter((t) => /\d{3,}/.test(t));
+    if (
+      modelNumbers.length > 0 &&
+      modelNumbers.every((model) => titleTokens.some((tt) => tt === model || tt.includes(model)))
+    ) {
+      combined = Math.max(combined, tokenScore >= 0.55 ? 0.82 : combined);
+    }
+
     return Math.round(Math.min(1, Math.max(0, combined)) * 100);
   }
 
@@ -123,6 +405,7 @@
     result.similarityUsesContent = false;
     result.similarityScannedContent = false;
     result.contentScanPending = !!result.detailUrl;
+    result.sellersSkipped = false;
   }
 
   function enhanceSimilarityFromContent(term, result, contentText) {
@@ -134,11 +417,169 @@
     result.similarityScannedContent = !!contentText;
 
     if (contentSim > titleSim) {
-      result.similarity = contentSim;
-      result.similarityUsesContent = true;
+      const canUseContentBoost =
+        titleSim >= getSkipTitleThreshold() || contentSim >= 75;
+      if (canUseContentBoost) {
+        const capped = Math.min(contentSim, titleSim + 15);
+        result.similarity = Math.max(titleSim, capped);
+        result.similarityUsesContent = result.similarity > titleSim;
+      } else {
+        result.similarity = titleSim;
+        result.similarityUsesContent = false;
+      }
     } else {
       result.similarity = titleSim;
       result.similarityUsesContent = false;
+    }
+  }
+
+  function shouldSkipDetailScan(result) {
+    if (!scanOptions.skipLowContentScan) return false;
+    const titleSim = result.similarityTitle ?? result.similarity ?? 0;
+    return titleSim < getSkipTitleThreshold();
+  }
+
+  function markDetailScanSkipped(result) {
+    result.sellersSkipped = true;
+    result.sellersLoading = false;
+    result.contentScanPending = false;
+    result.sellersError = false;
+  }
+
+  function getSellerCountNumber(result) {
+    if (result.sellersTotalCount) return result.sellersTotalCount;
+    const text = result.sellerCountText || '';
+    const match = text.match(/(\d+)/);
+    return match ? parseInt(match[1], 10) : 0;
+  }
+
+  function hasMultipleSellers(result) {
+    if (result.sellersTotalCount > 1) return true;
+    if (result.sellersTotalCount === 1) return false;
+    if (Array.isArray(result.sellers) && result.sellers.length > 1) return true;
+    if (Array.isArray(result.sellers) && result.sellers.length === 1) return false;
+    if (!result.detailUrl) return false;
+    return getSellerCountNumber(result) > 1;
+  }
+
+  function hasPrefetchedSellers(result) {
+    return Array.isArray(result.sellers) && result.sellers.length > 0;
+  }
+
+  function isComparisonDetailUrl(url) {
+    return /,\d+\.html(?:[?#]|$)/i.test(url || '');
+  }
+
+  function getFilterSortSettings(prefix) {
+    const sortEl = document.getElementById(`${prefix}-sort`);
+    const simEl = document.getElementById(`${prefix}-filter-sim`);
+    const multiEl = document.getElementById(`${prefix}-filter-multi-seller`);
+    return {
+      sort: sortEl ? sortEl.value : 'rank',
+      minSimilarity: simEl ? parseInt(simEl.value, 10) : 0,
+      multiSellerOnly: multiEl ? multiEl.checked : false,
+    };
+  }
+
+  function filterAndSortResults(results, settings) {
+    let list = results.map((r, idx) => ({ ...r, akakceRank: r.akakceRank ?? idx + 1 }));
+    if (settings.minSimilarity > 0) {
+      list = list.filter((r) => r.similarity >= settings.minSimilarity);
+    }
+    if (settings.multiSellerOnly) {
+      list = list.filter((r) => hasMultipleSellers(r));
+    }
+    switch (settings.sort) {
+      case 'similarity-desc':
+        list.sort((a, b) => b.similarity - a.similarity || a.akakceRank - b.akakceRank);
+        break;
+      case 'price-asc':
+        list.sort((a, b) => {
+          const pa = parsePriceNumber(a.price);
+          const pb = parsePriceNumber(b.price);
+          if (Number.isNaN(pa) && Number.isNaN(pb)) return a.akakceRank - b.akakceRank;
+          if (Number.isNaN(pa)) return 1;
+          if (Number.isNaN(pb)) return -1;
+          return pa - pb || a.akakceRank - b.akakceRank;
+        });
+        break;
+      case 'price-desc':
+        list.sort((a, b) => {
+          const pa = parsePriceNumber(a.price);
+          const pb = parsePriceNumber(b.price);
+          if (Number.isNaN(pa) && Number.isNaN(pb)) return a.akakceRank - b.akakceRank;
+          if (Number.isNaN(pa)) return 1;
+          if (Number.isNaN(pb)) return -1;
+          return pb - pa || a.akakceRank - b.akakceRank;
+        });
+        break;
+      default:
+        list.sort((a, b) => a.akakceRank - b.akakceRank);
+    }
+    return list;
+  }
+
+  function findBestMatch(results) {
+    if (!results || results.length === 0) return null;
+    let best = results[0];
+    let bestIdx = 0;
+    for (let i = 1; i < results.length; i++) {
+      if (results[i].similarity > best.similarity) {
+        best = results[i];
+        bestIdx = i;
+      }
+    }
+    return { result: best, rank: bestIdx + 1 };
+  }
+
+  function buildExportRows(outcomes) {
+    const sellerCols = getMaxSellersShown() * 2;
+    const header = [
+      'Terim',
+      'Akakçe Sırası',
+      'Ürün',
+      'Yakınlık %',
+      'Fiyat',
+      'Satıcı Sayısı',
+      ...Array.from({ length: getMaxSellersShown() }, (_, i) => [`${i + 1}. Satıcı`, `${i + 1}. Fiyat`]).flat(),
+      'Durum',
+    ];
+    const rows = [header];
+
+    for (const outcome of outcomes) {
+      const status = outcome.statusText || (outcome.cloudflareBlocked ? 'Cloudflare engeli' : 'Tamam');
+      if (!outcome.results || outcome.results.length === 0) {
+        rows.push([outcome.term, '', '', '', '', '', ...Array(sellerCols).fill(''), status]);
+        continue;
+      }
+      outcome.results.forEach((result, idx) => {
+        const sellers = (result.sellers || []).slice(0, getMaxSellersShown());
+        const sellerCells = [];
+        for (let i = 0; i < getMaxSellersShown(); i++) {
+          const s = sellers[i];
+          sellerCells.push(sellerName(s), sellerPrice(s));
+        }
+        rows.push([
+          outcome.term,
+          result.akakceRank ?? idx + 1,
+          result.title || '',
+          result.similarity ?? '',
+          result.price || '',
+          result.sellerCountText || result.sellersTotalCount || '',
+          ...sellerCells,
+          status,
+        ]);
+      });
+    }
+    return rows;
+  }
+
+  async function exportOutcomes(outcomes, defaultName) {
+    if (!outcomes || outcomes.length === 0) return;
+    const rows = buildExportRows(outcomes);
+    const res = await api.exportExcel({ rows, defaultName });
+    if (res && res.error) {
+      alert('Dışa aktarma başarısız: ' + res.error);
     }
   }
 
@@ -154,6 +595,7 @@
   const views = {
     single: document.getElementById('view-single'),
     multi: document.getElementById('view-multi'),
+    settings: document.getElementById('view-settings'),
     detail: document.getElementById('view-detail'),
   };
   const navButtons = Array.from(document.querySelectorAll('.nav-btn'));
@@ -183,7 +625,7 @@
   });
 
   // ------------------------------------------------------------------ //
-  // Sonuç satırı / satıcı tablosu render'ı (Tek + Çoklu tarama ortak)
+  // Sonuç satırı / satıcı tablosu render'ı
   // ------------------------------------------------------------------ //
   const rowTemplate = document.getElementById('tpl-result-row');
 
@@ -197,14 +639,19 @@
       li.textContent = text;
       listEl.appendChild(li);
     };
-    if (!result.detailUrl) {
-      titleEl.textContent = 'Satıcılar';
-      appendMsg('Bu üründe akakçe karşılaştırma sayfası yok (tek teklif)', 'sellers-empty');
-      return;
-    }
     if (result.sellersLoading) {
       titleEl.textContent = 'Satıcılar';
       appendMsg('Satıcılar yükleniyor…', 'sellers-loading');
+      return;
+    }
+    if (shouldSkipDetailScan(result)) {
+      titleEl.textContent = 'Satıcılar';
+      appendMsg(`Detay taraması atlandı (başlık yakınlığı <%${getSkipTitleThreshold()})`, 'sellers-empty');
+      return;
+    }
+    if (result.sellersSkipped) {
+      titleEl.textContent = 'Satıcılar';
+      appendMsg(`Detay taraması atlandı (başlık yakınlığı <%${getSkipTitleThreshold()})`, 'sellers-empty');
       return;
     }
     if (result.sellersError) {
@@ -215,27 +662,35 @@
     const sellers = result.sellers || [];
     if (sellers.length === 0) {
       titleEl.textContent = 'Satıcılar';
-      appendMsg('Satıcı bulunamadı', 'sellers-empty');
+      appendMsg(result.detailUrl ? 'Satıcı bulunamadı' : 'Satıcı bilgisi bulunamadı', 'sellers-empty');
       return;
     }
-    const shown = sellers.slice(0, MAX_SELLERS_SHOWN);
-    titleEl.textContent = result.sellersTotalCount
-      ? `Satıcılar (ilk ${shown.length} / ${result.sellersTotalCount})`
-      : `Satıcılar (ilk ${shown.length})`;
+    const shown = sellers.slice(0, getMaxSellersShown());
+    if (result.singleOffer || shown.length === 1) {
+      titleEl.textContent = 'Satıcılar (tek teklif)';
+    } else if (result.sellersTotalCount) {
+      titleEl.textContent = `Satıcılar (ilk ${shown.length} / ${result.sellersTotalCount})`;
+    } else {
+      titleEl.textContent = `Satıcılar (ilk ${shown.length})`;
+    }
     shown.forEach((seller, i) => {
       const li = document.createElement('li');
-      li.textContent = `${i + 1}. Satıcı — ${seller}`;
+      const name = sellerName(seller);
+      const price = sellerPrice(seller);
+      li.innerHTML = `${i + 1}. Satıcı — <span class="seller-name">${escapeHtml(name)}</span>${
+        price ? ` <span class="seller-price">— ${escapeHtml(price)}</span>` : ''
+      }`;
       listEl.appendChild(li);
     });
   }
 
-  function createResultRow(result, index) {
+  function createResultRow(result, displayIndex, term) {
     const node = rowTemplate.content.firstElementChild.cloneNode(true);
-    node.querySelector('.result-rank').textContent = '#' + (index + 1);
-    node.querySelector('.result-title').textContent = result.title || '(Başlık bulunamadı)';
-    node.querySelector('.result-title').title = result.title || '';
-    node.querySelector('.result-price').textContent = result.price || '—';
-    node.querySelector('.result-seller-count').textContent = result.sellerCountText || '';
+    const rankLabel = result.akakceRank ? `#${result.akakceRank}` : `#${displayIndex + 1}`;
+    node.querySelector('.result-rank').textContent = rankLabel;
+    const titleEl = node.querySelector('.result-title');
+    titleEl.innerHTML = highlightTitle(term, result.title || '(Başlık bulunamadı)');
+    titleEl.title = result.title || '';
     const similarityBadge = node.querySelector('.badge-similarity');
     applySimilarityBadge(similarityBadge, result, node);
     renderSellersInto(node.querySelector('.result-sellers'), result);
@@ -248,43 +703,63 @@
     return node;
   }
 
-  function renderResultsList(containerEl, results) {
+  function renderResultsList(containerEl, results, term, settings) {
     containerEl.innerHTML = '';
-    if (!results || results.length === 0) {
+    const displayResults = settings ? filterAndSortResults(results, settings) : results;
+    if (!displayResults || displayResults.length === 0) {
       const div = document.createElement('div');
       div.className = 'state-message';
-      div.textContent = 'Sonuç bulunamadı.';
+      div.textContent = results && results.length > 0 ? 'Filtreye uygun sonuç yok.' : 'Sonuç bulunamadı.';
       containerEl.appendChild(div);
       return;
     }
-    results.forEach((result, index) => {
-      containerEl.appendChild(createResultRow(result, index));
+    displayResults.forEach((result, index) => {
+      containerEl.appendChild(createResultRow(result, index, term));
     });
   }
 
-  function updateSellerRowInPlace(containerEl, index, result) {
+  function findResultRowIndex(containerEl, akakceRank) {
     const rows = containerEl.querySelectorAll('.result-row');
-    const row = rows[index];
-    if (!row) return;
-    renderSellersInto(row.querySelector('.result-sellers'), result);
+    for (let i = 0; i < rows.length; i++) {
+      const rankEl = rows[i].querySelector('.result-rank');
+      if (rankEl && rankEl.textContent === `#${akakceRank}`) return i;
+    }
+    return -1;
   }
 
-  function updateSimilarityRowInPlace(containerEl, index, result) {
+  function updateSellerRowInPlace(containerEl, result, settings, term) {
+    const rowIdx = findResultRowIndex(containerEl, result.akakceRank);
+    if (rowIdx < 0) {
+      if (settings && term) {
+        renderResultsList(containerEl, containerEl._sourceResults || [result], term, settings);
+      }
+      return;
+    }
     const rows = containerEl.querySelectorAll('.result-row');
-    const row = rows[index];
-    if (!row) return;
+    renderSellersInto(rows[rowIdx].querySelector('.result-sellers'), result);
+  }
+
+  function updateSimilarityRowInPlace(containerEl, result, settings, term) {
+    const rowIdx = findResultRowIndex(containerEl, result.akakceRank);
+    if (rowIdx < 0) {
+      if (settings && term) {
+        renderResultsList(containerEl, containerEl._sourceResults || [result], term, settings);
+      }
+      return;
+    }
+    const rows = containerEl.querySelectorAll('.result-row');
+    const row = rows[rowIdx];
     const similarityBadge = row.querySelector('.badge-similarity');
     if (!similarityBadge) return;
     applySimilarityBadge(similarityBadge, result, row);
   }
 
-  function finalizeStuckSimilarity(term, results, containerEl, summaryEl) {
+  function finalizeStuckSimilarity(term, results, containerEl, summaryEl, settings) {
     let changed = false;
-    for (let i = 0; i < results.length; i++) {
-      const result = results[i];
-      if (!result.contentScanPending) continue;
+    for (const result of results) {
+      if (!result.contentScanPending || shouldSkipDetailScan(result)) continue;
       enhanceSimilarityFromContent(term, result, '');
-      updateSimilarityRowInPlace(containerEl, i, result);
+      updateSimilarityRowInPlace(containerEl, result, settings, term);
       changed = true;
     }
     if (changed && summaryEl) {
@@ -293,39 +768,105 @@
   }
 
   async function enrichSellers(results, containerEl, options = {}) {
-    const { term, summaryEl } = options;
+    const { term, summaryEl, settings, scanControl, onResultUpdated } = options;
+    const shouldStop = () => isScanCancelled(scanControl);
 
-    for (let i = 0; i < results.length; i++) {
-      if (results[i].detailUrl) {
-        results[i].sellersLoading = true;
-        updateSellerRowInPlace(containerEl, i, results[i]);
+    for (const result of results) {
+      await awaitScanControl(scanControl);
+      if (shouldStop()) break;
+
+      if (shouldSkipDetailScan(result)) {
+        markDetailScanSkipped(result);
+        updateSellerRowInPlace(containerEl, result, settings, term);
+        continue;
+      }
+
+      const canFetch = !!result.detailUrl && isComparisonDetailUrl(result.detailUrl);
+      const usePrefetchOnly =
+        hasPrefetchedSellers(result) &&
+        (result.singleOffer || result.sellersTotalCount <= 1 || !isComparisonDetailUrl(result.detailUrl));
+      if (!canFetch && !usePrefetchOnly) continue;
+      if (canFetch) {
+        result.sellersLoading = true;
+        updateSellerRowInPlace(containerEl, result, settings, term);
       }
     }
 
-    for (let i = 0; i < results.length; i++) {
-      const result = results[i];
-      if (!result.detailUrl) continue;
+    for (const result of results) {
+      await awaitScanControl(scanControl);
+      if (shouldStop()) break;
+
+      if (shouldSkipDetailScan(result)) {
+        markDetailScanSkipped(result);
+        if (term) {
+          enhanceSimilarityFromContent(term, result, '');
+          updateSimilarityRowInPlace(containerEl, result, settings, term);
+        }
+        updateSellerRowInPlace(containerEl, result, settings, term);
+        if (onResultUpdated) onResultUpdated(result);
+        continue;
+      }
+
+      if (hasPrefetchedSellers(result) && (result.singleOffer || result.sellersTotalCount <= 1)) {
+        result.sellersLoading = false;
+        result.contentScanPending = false;
+        if (term) {
+          enhanceSimilarityFromContent(term, result, '');
+          updateSimilarityRowInPlace(containerEl, result, settings, term);
+        }
+        updateSellerRowInPlace(containerEl, result, settings, term);
+        if (onResultUpdated) onResultUpdated(result);
+        continue;
+      }
+
+      if (!result.detailUrl || !isComparisonDetailUrl(result.detailUrl)) {
+        if (hasPrefetchedSellers(result)) {
+          result.sellersLoading = false;
+          updateSellerRowInPlace(containerEl, result, settings, term);
+        }
+        continue;
+      }
+
       result.sellersLoading = true;
-      updateSellerRowInPlace(containerEl, i, result);
+      updateSellerRowInPlace(containerEl, result, settings, term);
+      const backupSellers = (result.sellers || []).map((s) =>
+        typeof s === 'string' ? { name: s, price: '' } : { ...s }
+      );
       try {
         const res = await api.getSellers(result.detailUrl);
-        result.sellers = res.sellers || [];
-        result.sellersTotalCount = res.totalCount || 0;
+        if ((res.sellers || []).length > 0) {
+          result.sellers = res.sellers;
+          result.sellersTotalCount = res.totalCount || res.sellers.length;
+        } else if (backupSellers.length > 0) {
+          result.sellers = backupSellers;
+          result.sellersTotalCount = result.sellersTotalCount || backupSellers.length;
+        } else {
+          result.sellers = [];
+          result.sellersTotalCount = 0;
+        }
         result.sellersLoading = false;
-        result.sellersError = !!(res.cloudflareBlocked && result.sellers.length === 0);
+        result.sellersError = !!(
+          res.cloudflareBlocked && !hasPrefetchedSellers(result) && result.sellers.length === 0
+        );
         if (term) {
           enhanceSimilarityFromContent(term, result, res.contentText || '');
-          updateSimilarityRowInPlace(containerEl, i, result);
+          updateSimilarityRowInPlace(containerEl, result, settings, term);
         }
       } catch (e) {
         result.sellersLoading = false;
-        result.sellersError = true;
+        if (backupSellers.length > 0) {
+          result.sellers = backupSellers;
+          result.sellersError = false;
+        } else {
+          result.sellersError = true;
+        }
         if (term) {
           enhanceSimilarityFromContent(term, result, '');
-          updateSimilarityRowInPlace(containerEl, i, result);
+          updateSimilarityRowInPlace(containerEl, result, settings, term);
         }
       }
-      updateSellerRowInPlace(containerEl, i, result);
+      updateSellerRowInPlace(containerEl, result, settings, term);
+      if (onResultUpdated) onResultUpdated(result);
     }
 
     if (term && summaryEl) {
@@ -339,7 +880,7 @@
   function buildSummary(results, cloudflareBlocked) {
     const chips = [];
     if (cloudflareBlocked) {
-      chips.push({ text: 'Cloudflare doğrulaması geçilemedi, lütfen tekrar deneyin', type: 'danger' });
+      chips.push({ text: 'Cloudflare doğrulaması geçilemedi, otomatik yeniden denendi', type: 'danger' });
       return chips;
     }
     chips.push({ text: `${results.length} sonuç bulundu`, type: 'default' });
@@ -370,6 +911,9 @@
     }
     if (results.some((r) => r.contentScanPending)) {
       chips.push({ text: 'Bazı sonuçların detay içeriği taranıyor…', type: 'default' });
+    }
+    if (results.some((r) => r.sellersSkipped || shouldSkipDetailScan(r))) {
+      chips.push({ text: 'Düşük yakınlıklı sonuçlarda detay taraması atlandı', type: 'default' });
     }
     if (results.slice(1).some((r) => !r.contentScanPending && r.similarity >= MATCH_THRESHOLD)) {
       chips.push({ text: 'Aranan değer başka sonuçlarda da geçiyor', type: 'default' });
@@ -403,18 +947,27 @@
   // ------------------------------------------------------------------ //
   async function performSearch(term) {
     const response = await api.search(term);
-    const results = (response.results || []).map((r) => {
+    const results = (response.results || []).slice(0, getMaxProducts()).map((r, idx) => {
+      const prefetchedSellers = Array.isArray(r.sellers) ? r.sellers : [];
       const base = {
         ...r,
-        sellers: [],
+        akakceRank: idx + 1,
+        sellers: prefetchedSellers,
+        sellersTotalCount: r.sellersTotalCount || prefetchedSellers.length || 0,
         sellersLoading: false,
         sellersError: false,
+        sellersSkipped: false,
         similarityUsesContent: false,
         similarityScannedContent: false,
         contentScanPending: false,
       };
       const result = { ...base };
       initTitleSimilarity(term, result);
+      if (shouldSkipDetailScan(result)) {
+        markDetailScanSkipped(result);
+      } else if (hasPrefetchedSellers(result)) {
+        result.contentScanPending = !!result.detailUrl && !result.singleOffer;
+      }
       return result;
     });
     return {
@@ -422,6 +975,7 @@
       results,
       cloudflareBlocked: !!response.cloudflareBlocked,
       error: response.error || null,
+      retriesUsed: response.retriesUsed || 0,
     };
   }
 
@@ -431,39 +985,217 @@
   const singleForm = document.getElementById('single-search-form');
   const singleInput = document.getElementById('single-search-input');
   const singleBtn = document.getElementById('single-search-btn');
+  const singlePauseBtn = document.getElementById('single-pause-btn');
+  const singleResumeBtn = document.getElementById('single-resume-btn');
+  const singleCancelBtn = document.getElementById('single-cancel-btn');
   const singleSummaryEl = document.getElementById('single-summary');
   const singleResultsEl = document.getElementById('single-results');
+  const singleToolbarEl = document.getElementById('single-toolbar');
+  const singleSortEl = document.getElementById('single-sort');
+  const singleFilterSimEl = document.getElementById('single-filter-sim');
+  const singleFilterMultiEl = document.getElementById('single-filter-multi-seller');
+  const singleExportBtn = document.getElementById('single-export-btn');
+  const optSkipLowContentEl = document.getElementById('opt-skip-low-content');
+
+  let singleStatusEl = null;
+
+  function syncSingleScanControls() {
+    updateScanControlUi(singleScanControl, {
+      primaryBtn: singleBtn,
+      pauseBtn: singlePauseBtn,
+      resumeBtn: singleResumeBtn,
+      cancelBtn: singleCancelBtn,
+    });
+    if (singleStatusEl && singleScanControl) {
+      if (singleScanControl.cancelled) {
+        singleStatusEl.textContent = 'Tarama iptal edildi.';
+      } else if (singleScanControl.paused) {
+        singleStatusEl.textContent = 'Tarama duraklatıldı. Devam Et ile sürdürebilirsiniz.';
+      }
+    }
+  }
+
+  singlePauseBtn.addEventListener('click', () => {
+    if (singleScanControl) singleScanControl.paused = true;
+    syncSingleScanControls();
+  });
+  singleResumeBtn.addEventListener('click', () => {
+    if (singleScanControl) singleScanControl.paused = false;
+    if (singleStatusEl) singleStatusEl.textContent = 'Satıcılar taranıyor…';
+    syncSingleScanControls();
+  });
+  singleCancelBtn.addEventListener('click', () => {
+    if (singleScanControl) {
+      singleScanControl.cancelled = true;
+      singleScanControl.paused = false;
+    }
+    syncSingleScanControls();
+  });
+
+  function resetSingleToolbarFilters() {
+    if (singleSortEl) singleSortEl.value = getDefaultSort();
+    if (singleFilterSimEl) singleFilterSimEl.value = 'all';
+    if (singleFilterMultiEl) singleFilterMultiEl.checked = false;
+  }
+
+  function refreshSingleResultsView() {
+    if (!singleScanContext) return;
+    const settings = getFilterSortSettings('single');
+    singleResultsEl._sourceResults = singleScanContext.results;
+    renderResultsList(singleResultsEl, singleScanContext.results, singleScanContext.term, settings);
+  }
+
+  [singleSortEl, singleFilterSimEl, singleFilterMultiEl].forEach((el) => {
+    el.addEventListener('change', refreshSingleResultsView);
+  });
+  singleFilterMultiEl.addEventListener('change', refreshSingleResultsView);
+
+  if (optSkipLowContentEl) {
+    optSkipLowContentEl.addEventListener('change', () => {
+      scanOptions.skipLowContentScan = optSkipLowContentEl.checked;
+      if (singleScanContext && singleScanContext.results) {
+        for (const result of singleScanContext.results) {
+          if (shouldSkipDetailScan(result)) {
+            markDetailScanSkipped(result);
+          } else {
+            result.sellersSkipped = false;
+          }
+        }
+        refreshSingleResultsView();
+        renderSummary(singleSummaryEl, buildSummary(singleScanContext.results, singleScanContext.cloudflareBlocked));
+      }
+    });
+    scanOptions.skipLowContentScan = optSkipLowContentEl.checked;
+  }
+
+  // ------------------------------------------------------------------ //
+  // Ayarlar
+  // ------------------------------------------------------------------ //
+  const settingsForm = document.getElementById('settings-form');
+  const settingsMaxProductsEl = document.getElementById('setting-max-products');
+  const settingsMaxSellersEl = document.getElementById('setting-max-sellers');
+  const settingsSkipThresholdEl = document.getElementById('setting-skip-threshold');
+  const settingsDefaultSortEl = document.getElementById('setting-default-sort');
+  const settingsResetBtn = document.getElementById('settings-reset-btn');
+  const settingsStatusEl = document.getElementById('settings-status');
+
+  if (settingsForm) {
+    applyAppSettingsToUi();
+
+    settingsForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      saveAppSettings(readSettingsFormValues());
+      if (singleScanContext && singleScanContext.results) {
+        reapplySkipRulesToResults(singleScanContext.results);
+        refreshSingleResultsView();
+        renderSummary(singleSummaryEl, buildSummary(singleScanContext.results, singleScanContext.cloudflareBlocked));
+      }
+      for (const outcome of multiOutcomes) {
+        if (outcome.results) reapplySkipRulesToResults(outcome.results);
+      }
+      showSettingsStatus('Ayarlar kaydedildi.', false);
+    });
+
+    if (settingsResetBtn) {
+      settingsResetBtn.addEventListener('click', () => {
+        saveAppSettings({ ...DEFAULT_SETTINGS });
+        if (singleScanContext && singleScanContext.results) {
+          reapplySkipRulesToResults(singleScanContext.results);
+          refreshSingleResultsView();
+          renderSummary(singleSummaryEl, buildSummary(singleScanContext.results, singleScanContext.cloudflareBlocked));
+        }
+        for (const outcome of multiOutcomes) {
+          if (outcome.results) reapplySkipRulesToResults(outcome.results);
+        }
+        showSettingsStatus('Varsayılan ayarlara döndürüldü.', false);
+      });
+    }
+  } else {
+    updateSkipOptionLabel();
+  }
+
+  singleExportBtn.addEventListener('click', () => {
+    if (!singleScanContext) return;
+    const stamp = new Date().toISOString().slice(0, 10);
+    exportOutcomes(
+      [
+        {
+          term: singleScanContext.term,
+          results: singleScanContext.results,
+          cloudflareBlocked: singleScanContext.cloudflareBlocked,
+          statusText: 'Tamam',
+        },
+      ],
+      `akakce-${singleScanContext.term.replace(/[^\w.-]+/g, '_')}-${stamp}.xlsx`
+    );
+  });
 
   singleForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     const term = singleInput.value.trim();
     if (!term) return;
 
-    singleBtn.disabled = true;
+    resetSingleToolbarFilters();
+
+    singleScanControl = createScanController();
+    syncSingleScanControls();
     singleSummaryEl.hidden = true;
+    singleToolbarEl.hidden = true;
     singleResultsEl.innerHTML = '';
     const loadingMsg = document.createElement('div');
     loadingMsg.className = 'state-message';
     loadingMsg.textContent = 'Aranıyor, Cloudflare doğrulaması bekleniyor olabilir…';
     singleResultsEl.appendChild(loadingMsg);
+    singleStatusEl = loadingMsg;
 
     try {
       const outcome = await performSearch(term);
-      renderResultsList(singleResultsEl, outcome.results);
+      if (isScanCancelled(singleScanControl)) {
+        singleScanContext = outcome;
+        singleResultsEl.innerHTML = '';
+        const div = document.createElement('div');
+        div.className = 'state-message';
+        div.textContent = 'Tarama iptal edildi.';
+        singleResultsEl.appendChild(div);
+        return;
+      }
+
+      singleScanContext = outcome;
+      const settings = getFilterSortSettings('single');
+      singleResultsEl._sourceResults = outcome.results;
+      renderResultsList(singleResultsEl, outcome.results, term, settings);
       renderSummary(singleSummaryEl, buildSummary(outcome.results, outcome.cloudflareBlocked));
+      singleToolbarEl.hidden = outcome.results.length === 0;
+      singleStatusEl = null;
+
       if (!outcome.cloudflareBlocked && outcome.results.length > 0) {
-        await enrichSellers(outcome.results, singleResultsEl, { term, summaryEl: singleSummaryEl });
+        await enrichSellers(outcome.results, singleResultsEl, {
+          term,
+          summaryEl: singleSummaryEl,
+          settings,
+          scanControl: singleScanControl,
+          onResultUpdated: refreshSingleResultsView,
+        });
+        refreshSingleResultsView();
+        if (isScanCancelled(singleScanControl)) {
+          const chips = buildSummary(outcome.results, false);
+          chips.push({ text: 'Satıcı taraması iptal edildi (kısmi sonuçlar gösteriliyor)', type: 'danger' });
+          renderSummary(singleSummaryEl, chips);
+        }
       } else {
-        finalizeStuckSimilarity(term, outcome.results, singleResultsEl, singleSummaryEl);
+        finalizeStuckSimilarity(term, outcome.results, singleResultsEl, singleSummaryEl, settings);
       }
     } catch (err) {
+      singleScanContext = null;
       singleResultsEl.innerHTML = '';
       const div = document.createElement('div');
       div.className = 'state-message is-error';
       div.textContent = 'Tarama sırasında bir hata oluştu: ' + err.message;
       singleResultsEl.appendChild(div);
     } finally {
-      singleBtn.disabled = false;
+      singleScanControl = null;
+      singleStatusEl = null;
+      syncSingleScanControls();
     }
   });
 
@@ -473,12 +1205,96 @@
   const multiPickBtn = document.getElementById('multi-pick-file-btn');
   const multiFileInfo = document.getElementById('multi-file-info');
   const multiStartBtn = document.getElementById('multi-start-btn');
+  const multiPauseBtn = document.getElementById('multi-pause-btn');
+  const multiResumeBtn = document.getElementById('multi-resume-btn');
+  const multiCancelBtn = document.getElementById('multi-cancel-btn');
+  const multiExportBtn = document.getElementById('multi-export-btn');
   const multiProgressEl = document.getElementById('multi-progress');
   const multiProgressFill = document.getElementById('multi-progress-fill');
   const multiProgressLabel = document.getElementById('multi-progress-label');
+  const multiEtaEl = document.getElementById('multi-eta');
+  const multiOverviewEl = document.getElementById('multi-overview');
+  const multiOverviewBody = document.getElementById('multi-overview-body');
   const multiGroupsEl = document.getElementById('multi-groups');
 
   let loadedTerms = [];
+
+  function renderOverviewRow(outcome) {
+    const tr = document.createElement('tr');
+    tr.dataset.term = outcome.term;
+
+    if (outcome.cloudflareBlocked || outcome.error) {
+      tr.innerHTML = `
+        <td class="cell-term">${escapeHtml(outcome.term)}</td>
+        <td class="cell-match">—</td>
+        <td>—</td>
+        <td>—</td>
+        <td>—</td>
+        <td>—</td>
+        <td class="cell-status-err">${escapeHtml(outcome.statusText || 'Hata')}</td>
+      `;
+      return tr;
+    }
+
+    const best = findBestMatch(outcome.results);
+    if (!best) {
+      tr.innerHTML = `
+        <td class="cell-term">${escapeHtml(outcome.term)}</td>
+        <td class="cell-match">Sonuç yok</td>
+        <td>—</td>
+        <td>—</td>
+        <td>—</td>
+        <td>—</td>
+        <td class="cell-status-err">Sonuç yok</td>
+      `;
+      return tr;
+    }
+
+    const { result, rank } = best;
+    const simClass =
+      result.similarity >= MATCH_THRESHOLD
+        ? 'cell-sim-high'
+        : result.similarity >= 50
+          ? 'cell-sim-medium'
+          : 'cell-sim-low';
+
+    tr.innerHTML = `
+      <td class="cell-term">${escapeHtml(outcome.term)}</td>
+      <td class="cell-match" title="${escapeHtml(result.title || '')}">${escapeHtml(result.title || '—')}</td>
+      <td>#${rank}</td>
+      <td class="${simClass}">%${result.similarity}</td>
+      <td>${escapeHtml(result.price || '—')}</td>
+      <td>${escapeHtml(result.sellerCountText || String(result.sellersTotalCount || '—'))}</td>
+      <td class="cell-status-ok">${escapeHtml(outcome.statusText || 'Tamam')}</td>
+    `;
+    return tr;
+  }
+
+  function upsertOverviewRow(outcome) {
+    const rows = Array.from(multiOverviewBody.querySelectorAll('tr'));
+    const existing = rows.find((r) => r.dataset.term === outcome.term);
+    const row = renderOverviewRow(outcome);
+    if (existing) {
+      existing.replaceWith(row);
+    } else {
+      multiOverviewBody.appendChild(row);
+    }
+  }
+
+  function addOverviewPendingRow(term) {
+    const tr = document.createElement('tr');
+    tr.dataset.term = term;
+    tr.innerHTML = `
+      <td class="cell-term">${escapeHtml(term)}</td>
+      <td class="cell-match">Taranıyor…</td>
+      <td>—</td>
+      <td>—</td>
+      <td>—</td>
+      <td>—</td>
+      <td>Taranıyor…</td>
+    `;
+    multiOverviewBody.appendChild(tr);
+  }
 
   multiPickBtn.addEventListener('click', async () => {
     const res = await api.pickFile();
@@ -492,6 +1308,50 @@
     const fileName = res.filePath.split(/[\\/]/).pop();
     multiFileInfo.textContent = `${loadedTerms.length} arama terimi yüklendi (${fileName})`;
     multiStartBtn.disabled = loadedTerms.length === 0;
+  });
+
+  multiExportBtn.addEventListener('click', () => {
+    if (multiOutcomes.length === 0) return;
+    const stamp = new Date().toISOString().slice(0, 10);
+    exportOutcomes(multiOutcomes, `akakce-coklu-${stamp}.xlsx`);
+  });
+
+  function syncMultiScanControls() {
+    updateScanControlUi(multiScanControl, {
+      primaryBtn: multiStartBtn,
+      pauseBtn: multiPauseBtn,
+      resumeBtn: multiResumeBtn,
+      cancelBtn: multiCancelBtn,
+      extraDisable: [multiPickBtn],
+    });
+    if (multiScanControl && multiScanControl.paused && multiProgressLabel.dataset.baseLabel) {
+      const base = multiProgressLabel.dataset.baseLabel;
+      if (!multiProgressLabel.textContent.includes('duraklatıldı')) {
+        multiProgressLabel.textContent = `${base} — duraklatıldı`;
+      }
+    }
+  }
+
+  multiPauseBtn.addEventListener('click', () => {
+    if (multiScanControl) {
+      multiScanControl.paused = true;
+      multiProgressLabel.dataset.baseLabel = multiProgressLabel.textContent.replace(/ — duraklatıldı$/, '');
+    }
+    syncMultiScanControls();
+  });
+  multiResumeBtn.addEventListener('click', () => {
+    if (multiScanControl) multiScanControl.paused = false;
+    if (multiProgressLabel.dataset.baseLabel) {
+      multiProgressLabel.textContent = multiProgressLabel.dataset.baseLabel;
+    }
+    syncMultiScanControls();
+  });
+  multiCancelBtn.addEventListener('click', () => {
+    if (multiScanControl) {
+      multiScanControl.cancelled = true;
+      multiScanControl.paused = false;
+    }
+    syncMultiScanControls();
   });
 
   function buildScanGroup(term) {
@@ -536,41 +1396,113 @@
 
   multiStartBtn.addEventListener('click', async () => {
     if (loadedTerms.length === 0) return;
-    multiStartBtn.disabled = true;
-    multiPickBtn.disabled = true;
+    multiScanControl = createScanController();
+    syncMultiScanControls();
+    multiExportBtn.hidden = true;
     multiGroupsEl.innerHTML = '';
+    multiOverviewBody.innerHTML = '';
+    multiOverviewEl.hidden = false;
     multiProgressEl.hidden = false;
+    multiOutcomes = [];
+
+    const scanStartedAt = Date.now();
 
     for (let i = 0; i < loadedTerms.length; i++) {
-      const term = loadedTerms[i];
-      multiProgressFill.style.width = `${Math.round((i / loadedTerms.length) * 100)}%`;
-      multiProgressLabel.textContent = `${i + 1}/${loadedTerms.length} taranıyor: ${term}`;
+      await awaitScanControl(multiScanControl);
+      if (isScanCancelled(multiScanControl)) break;
 
+      const term = loadedTerms[i];
+      const progressPct = Math.round((i / loadedTerms.length) * 100);
+      multiProgressFill.style.width = `${progressPct}%`;
+      const progressText = `${i + 1}/${loadedTerms.length} taranıyor: ${term}`;
+      multiProgressLabel.textContent = progressText;
+      multiProgressLabel.dataset.baseLabel = progressText;
+
+      if (i > 0) {
+        const elapsed = Date.now() - scanStartedAt;
+        const avgPerTerm = elapsed / i;
+        const remainingMs = avgPerTerm * (loadedTerms.length - i);
+        multiEtaEl.textContent = formatDuration(remainingMs);
+      } else {
+        multiEtaEl.textContent = '';
+      }
+
+      addOverviewPendingRow(term);
       const group = buildScanGroup(term);
       multiGroupsEl.appendChild(group.el);
 
+      const outcome = {
+        term,
+        results: [],
+        cloudflareBlocked: false,
+        error: null,
+        statusText: 'Taranıyor…',
+      };
+
       try {
-        const outcome = await performSearch(term);
-        renderResultsList(group.bodyResultsEl, outcome.results);
-        renderSummary(group.summaryEl, buildSummary(outcome.results, outcome.cloudflareBlocked));
-        group.setStatus(
-          outcome.cloudflareBlocked ? 'Cloudflare engeli' : `${outcome.results.length} sonuç`,
-          outcome.cloudflareBlocked ? 'error' : 'success'
-        );
-        if (!outcome.cloudflareBlocked && outcome.results.length > 0) {
-          await enrichSellers(outcome.results, group.bodyResultsEl, { term, summaryEl: group.summaryEl });
+        const searchOutcome = await performSearch(term);
+        if (isScanCancelled(multiScanControl)) {
+          outcome.statusText = 'İptal edildi';
+          group.setStatus('İptal edildi', 'error');
+          multiOutcomes.push(outcome);
+          upsertOverviewRow(outcome);
+          break;
+        }
+
+        outcome.results = searchOutcome.results;
+        outcome.cloudflareBlocked = searchOutcome.cloudflareBlocked;
+        outcome.error = searchOutcome.error;
+
+        renderResultsList(group.bodyResultsEl, searchOutcome.results, term);
+        group.bodyResultsEl._sourceResults = searchOutcome.results;
+        renderSummary(group.summaryEl, buildSummary(searchOutcome.results, searchOutcome.cloudflareBlocked));
+
+        if (searchOutcome.cloudflareBlocked) {
+          outcome.statusText = 'Cloudflare engeli';
+          group.setStatus('Cloudflare engeli', 'error');
+        } else if (searchOutcome.results.length === 0) {
+          outcome.statusText = 'Sonuç yok';
+          group.setStatus('Sonuç yok', 'error');
         } else {
-          finalizeStuckSimilarity(term, outcome.results, group.bodyResultsEl, group.summaryEl);
+          group.setStatus(`${searchOutcome.results.length} sonuç`, 'success');
+          await enrichSellers(searchOutcome.results, group.bodyResultsEl, {
+            term,
+            summaryEl: group.summaryEl,
+            scanControl: multiScanControl,
+          });
+          if (isScanCancelled(multiScanControl)) {
+            outcome.statusText = 'İptal edildi (kısmi)';
+            group.setStatus('İptal edildi', 'error');
+          } else {
+            outcome.statusText = 'Tamam';
+          }
         }
       } catch (err) {
+        outcome.error = err.message;
+        outcome.statusText = 'Hata: ' + err.message;
         group.setStatus('Hata: ' + err.message, 'error');
       }
+
+      multiOutcomes.push(outcome);
+      upsertOverviewRow(outcome);
+
+      if (isScanCancelled(multiScanControl)) break;
     }
 
     multiProgressFill.style.width = '100%';
-    multiProgressLabel.textContent = `Tamamlandı: ${loadedTerms.length}/${loadedTerms.length}`;
-    multiStartBtn.disabled = false;
-    multiPickBtn.disabled = false;
+    if (isScanCancelled(multiScanControl)) {
+      multiProgressLabel.textContent = `İptal edildi: ${multiOutcomes.length}/${loadedTerms.length} terim tarandı`;
+      multiEtaEl.textContent = '';
+    } else {
+      multiProgressLabel.textContent = `Tamamlandı: ${loadedTerms.length}/${loadedTerms.length}`;
+      multiEtaEl.textContent = '';
+    }
+
+    multiScanControl = null;
+    syncMultiScanControls();
+    if (multiOutcomes.length > 0) {
+      multiExportBtn.hidden = false;
+    }
   });
 
   // ------------------------------------------------------------------ //

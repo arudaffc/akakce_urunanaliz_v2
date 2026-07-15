@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('akakceAPI', {
   search: (term) => ipcRenderer.invoke('scraper:search', term),
   getSellers: (detailUrl) => ipcRenderer.invoke('scraper:get-sellers', detailUrl),
   pickFile: () => ipcRenderer.invoke('dialog:pick-file'),
+  exportExcel: (payload) => ipcRenderer.invoke('dialog:export-excel', payload),
 
   openDetail: (url) => ipcRenderer.invoke('detail:open', url),
   closeDetail: () => ipcRenderer.invoke('detail:close'),
