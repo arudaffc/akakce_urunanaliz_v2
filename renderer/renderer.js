@@ -1,6 +1,5 @@
 (function () {
   const api = window.akakceAPI;
-  const MAX_SELLER_ENRICH = 10;
   const MAX_SELLERS_SHOWN = 5;
   const MATCH_THRESHOLD = 80;
 
@@ -289,8 +288,15 @@
 
   async function enrichSellers(results, containerEl, options = {}) {
     const { term, summaryEl } = options;
-    const limit = Math.min(results.length, MAX_SELLER_ENRICH);
-    for (let i = 0; i < limit; i++) {
+
+    for (let i = 0; i < results.length; i++) {
+      if (results[i].detailUrl) {
+        results[i].sellersLoading = true;
+        updateSellerRowInPlace(containerEl, i, results[i]);
+      }
+    }
+
+    for (let i = 0; i < results.length; i++) {
       const result = results[i];
       if (!result.detailUrl) continue;
       result.sellersLoading = true;
