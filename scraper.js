@@ -8,11 +8,13 @@
 //     bu sayede challenge kendiliğinden çözülür ve `cf_clearance` çerezi
 //     kalıcı session partition'da saklanır (sonraki taramalar daha hızlı olur).
 //
-// NOT: Akakçe'nin HTML yapısı zaman zaman değişebilir. Aşağıdaki seçiciler
-// bilinen/gözlemlenen yapıya göre çoklu-strateji (JSON-LD -> bilinen CSS
-// seçicileri -> genel bağlantı sezgisi) ile yazılmıştır. Tarama sonuç
-// vermezse önce bu dosyadaki EXTRACT_* betiklerini güncel sayfa yapısına
-// göre güncellemek gerekir.
+// NOT: Akakçe sayfaları Astro framework'ü ile üretiliyor ve her sayfada
+// `<astro-island props="...">` elementleri içinde, sayfanın kendi React/Vue
+// bileşenlerine aktardığı TAM YAPILANDIRILMIŞ JSON veri (ürün listesi / satıcı
+// listesi) bulunuyor. Bu veri CSS class isimlerinden çok daha kararlı olduğu
+// için birincil kaynak olarak kullanılıyor; DOM seçicileri yalnızca yedek
+// (fallback) stratejidir. Akakçe bu veri yapısını değiştirirse önce
+// EXTRACT_* betiklerindeki "Astro island" stratejisini güncellemek gerekir.
 
 const { BrowserWindow, session } = require('electron');
 const { SESSION_PARTITION, USER_AGENT, AKAKCE_ORIGIN } = require('./constants');
@@ -25,36 +27,107 @@ function searchUrl(term) {
   return `${AKAKCE_ORIGIN}/arama/?q=${encodeURIComponent(term)}`;
 }
 
+// Akakçe'nin Astro island'larında kullandığı serileştirme biçimini geri
+// çözer: her değer [tag, value] şeklinde saklanır (tag 0 = düz değer/nesne,
+// tag 1 = dizi). Nesnelerin ve dizilerin içindeki her alan da aynı şekilde
+// sarmalanmış olduğundan işlem özyinelemeli yapılır.
+const DESERIALIZE_HELPERS_JS = `
+  function deserializeValue(node) {
+    if (Array.isArray(node) && node.length === 2 && (node[0] === 0 || node[0] === 1)) {
+      const tag = node[0];
+      const value = node[1];
+      if (tag === 1) {
+        return Array.isArray(value) ? value.map(deserializeValue) : value;
+      }
+      if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+        const out = {};
+        for (const key of Object.keys(value)) out[key] = deserializeValue(value[key]);
+        return out;
+      }
+      return value;
+    }
+    return node;
+  }
+  function deserializeRoot(obj) {
+    if (!obj || typeof obj !== 'object') return obj;
+    const out = {};
+    for (const key of Object.keys(obj)) out[key] = deserializeValue(obj[key]);
+    return out;
+  }
+  function readIslandData() {
+    const islands = Array.from(document.querySelectorAll('astro-island[props]'));
+    const parsed = [];
+    for (const el of islands) {
+      try {
+        parsed.push(deserializeRoot(JSON.parse(el.getAttribute('props'))));
+      } catch (e) {}
+    }
+    return parsed;
+  }
+`;
+
 const EXTRACT_SEARCH_RESULTS_JS = `(() => {
+  ${DESERIALIZE_HELPERS_JS}
   function absUrl(href) {
+    if (!href) return '';
     try { return new URL(href, location.origin).href; } catch (e) { return href; }
   }
   function textOf(el) { return (el && el.textContent || '').replace(/\\s+/g, ' ').trim(); }
+  function formatPrice(n) {
+    if (typeof n !== 'number') return '';
+    return n.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' TL';
+  }
 
   const results = [];
 
+  // Strateji 1 (birincil): sayfaya gömülü Astro island JSON verisi
   try {
-    const ldScripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'));
-    for (const s of ldScripts) {
-      let json;
-      try { json = JSON.parse(s.textContent); } catch (e) { continue; }
-      const items = Array.isArray(json) ? json : (json.itemListElement || [json]);
-      for (const it of items) {
-        const item = (it && it.item) || it;
-        if (item && (item['@type'] === 'Product' || item.name)) {
-          const offers = item.offers || {};
+    const islands = readIslandData();
+    for (const root of islands) {
+      const products =
+        root && root.searchData && root.searchData.productList && root.searchData.productList.products;
+      if (Array.isArray(products) && products.length > 0) {
+        for (const p of products) {
+          if (!p || !p.name) continue;
           results.push({
-            title: item.name || '',
-            detailUrl: item.url ? absUrl(item.url) : '',
-            price: offers.price || offers.lowPrice || '',
-            sellerCountText: offers.offerCount ? (offers.offerCount + ' Satıcı') : '',
-            source: 'jsonld',
+            title: p.name,
+            detailUrl: p.url ? absUrl(p.url) : '',
+            price: formatPrice(p.price),
+            sellerCountText: p.countOfPrices ? (p.countOfPrices + ' Satıcı') : '',
+            source: 'astro-island',
           });
         }
+        break;
       }
     }
   } catch (e) {}
 
+  // Strateji 2 (yedek): JSON-LD yapısal verisi
+  if (results.length === 0) {
+    try {
+      const ldScripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'));
+      for (const s of ldScripts) {
+        let json;
+        try { json = JSON.parse(s.textContent); } catch (e) { continue; }
+        const items = Array.isArray(json) ? json : (json.itemListElement || [json]);
+        for (const it of items) {
+          const item = (it && it.item) || it;
+          if (item && (item['@type'] === 'Product' || item.name)) {
+            const offers = item.offers || {};
+            results.push({
+              title: item.name || '',
+              detailUrl: item.url ? absUrl(item.url) : '',
+              price: offers.price || offers.lowPrice || '',
+              sellerCountText: offers.offerCount ? (offers.offerCount + ' Satıcı') : '',
+              source: 'jsonld',
+            });
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  // Strateji 3 (yedek): bilinen DOM seçicileri
   if (results.length === 0) {
     const items = Array.from(document.querySelectorAll('#APL > li, .search_v8 li, ul.pl_v9 > li, ul[id="APL"] li'));
     for (const li of items) {
@@ -79,6 +152,7 @@ const EXTRACT_SEARCH_RESULTS_JS = `(() => {
     }
   }
 
+  // Strateji 4 (son çare): genel bağlantı sezgisi
   if (results.length === 0) {
     const anchors = Array.from(document.querySelectorAll('a[href*=","][href$=".html"]'));
     const seen = new Set();
@@ -109,41 +183,51 @@ const EXTRACT_SEARCH_RESULTS_JS = `(() => {
 })()`;
 
 const EXTRACT_SELLERS_JS = `(() => {
+  ${DESERIALIZE_HELPERS_JS}
   function textOf(el) { return (el && el.textContent || '').replace(/\\s+/g, ' ').trim(); }
-  const sellers = [];
-  const seen = new Set();
 
-  const imgs = Array.from(document.querySelectorAll('img[alt]'));
-  for (const img of imgs) {
-    const alt = (img.getAttribute('alt') || '').trim();
-    if (!alt || alt.length < 2 || alt.length > 40) continue;
-    if (/akak[cç]e|logo|icon/i.test(alt)) continue;
-    const row = img.closest('li, tr, div[class*="satici"], div[class*="shop"], div[class*="offer"], div[class*="slc"]') || img.parentElement;
-    if (!row) continue;
-    const rowText = textOf(row);
-    const looksLikeOfferRow =
-      /sat[ıi]c[ıi]ya git|sepete ekle|\\d+[.,]\\d{2}\\s*TL/i.test(rowText) ||
-      !!row.querySelector('a[href*="akakce.com/c/"], a[href*="/r/"]');
-    if (!looksLikeOfferRow) continue;
-    if (seen.has(alt)) continue;
-    seen.add(alt);
-    sellers.push(alt);
-  }
+  let sellers = [];
+  let totalCount = 0;
 
-  if (sellers.length === 0) {
-    const nameEls = Array.from(
-      document.querySelectorAll('[class*="satici"], [class*="shop_name"], [class*="store"], [class*="mn_v"]')
-    );
-    for (const el of nameEls) {
-      const t = textOf(el);
-      if (t && t.length > 1 && t.length < 40 && !seen.has(t)) {
-        seen.add(t);
-        sellers.push(t);
+  // Strateji 1 (birincil): sayfaya gömülü Astro island JSON verisi.
+  // Ürün detay sayfasındaki "initialPgList" alanı, tüm satıcı tekliflerini
+  // fiyata göre artan sırada (yani ekranda görünen 1./2./3. satıcı sırasıyla
+  // aynı) içerir.
+  try {
+    const islands = readIslandData();
+    for (const root of islands) {
+      if (Array.isArray(root.initialPgList) && root.initialPgList.length > 0) {
+        sellers = root.initialPgList.map((o) => (o && o.vdName) || '').filter(Boolean);
       }
+      if (root.metadata && typeof root.metadata.countOfPrCode === 'number') {
+        totalCount = root.metadata.countOfPrCode;
+      }
+    }
+  } catch (e) {}
+
+  // Strateji 2 (yedek): görsel alt metni + satır bağlamı sezgisi
+  if (sellers.length === 0) {
+    const seen = new Set();
+    const imgs = Array.from(document.querySelectorAll('img[alt]'));
+    for (const img of imgs) {
+      const alt = (img.getAttribute('alt') || '').trim();
+      if (!alt || alt.length < 2 || alt.length > 40 || /^\\d+$/.test(alt)) continue;
+      if (/akak[cç]e|logo|icon|fiyat grafi/i.test(alt)) continue;
+      const row =
+        img.closest('li, tr, div[class*="satici"], div[class*="shop"], div[class*="offer"], div[class*="slc"]') ||
+        img.parentElement;
+      if (!row) continue;
+      const rowText = textOf(row);
+      const looksLikeOfferRow =
+        /sat[ıi]c[ıi]ya git|sepete ekle|\\d+[.,]\\d{2}\\s*TL/i.test(rowText) ||
+        !!row.querySelector('a[href*="akakce.com/c/"], a[href*="/r/"]');
+      if (!looksLikeOfferRow || seen.has(alt)) continue;
+      seen.add(alt);
+      sellers.push(alt);
     }
   }
 
-  return sellers.slice(0, 30);
+  return { sellers: sellers.slice(0, 30), totalCount };
 })()`;
 
 class AkakceScraper {
@@ -210,7 +294,7 @@ class AkakceScraper {
         return { term, url, cloudflareBlocked: false, error: e.message, results: [] };
       }
       const waitResult = await this._waitForReadyState(
-        `document.querySelector('#APL, .search_v8') || document.body.innerText.length > 800`
+        `document.querySelector('astro-island[props], #APL, .search_v8') || document.body.innerText.length > 800`
       );
       let data = { results: [] };
       try {
@@ -233,18 +317,20 @@ class AkakceScraper {
       try {
         await win.loadURL(detailUrl);
       } catch (e) {
-        return { detailUrl, sellers: [], cloudflareBlocked: false, error: e.message };
+        return { detailUrl, sellers: [], totalCount: 0, cloudflareBlocked: false, error: e.message };
       }
       const waitResult = await this._waitForReadyState(`document.body.innerText.length > 800`);
-      let sellers = [];
+      let data = { sellers: [], totalCount: 0 };
       try {
-        sellers = await win.webContents.executeJavaScript(EXTRACT_SELLERS_JS);
+        data = await win.webContents.executeJavaScript(EXTRACT_SELLERS_JS);
       } catch (e) {
-        sellers = [];
+        data = { sellers: [], totalCount: 0 };
       }
+      const sellers = data.sellers || [];
       return {
         detailUrl,
         sellers,
+        totalCount: data.totalCount || 0,
         cloudflareBlocked: !waitResult.ok && sellers.length === 0,
       };
     });

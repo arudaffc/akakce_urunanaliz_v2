@@ -76,7 +76,9 @@
   // ------------------------------------------------------------------ //
   const rowTemplate = document.getElementById('tpl-result-row');
 
-  function renderSellersInto(listEl, result) {
+  function renderSellersInto(wrapperEl, result) {
+    const titleEl = wrapperEl.querySelector('.sellers-title');
+    const listEl = wrapperEl.querySelector('.sellers-list');
     listEl.innerHTML = '';
     const appendMsg = (text, cls) => {
       const li = document.createElement('li');
@@ -84,20 +86,32 @@
       li.textContent = text;
       listEl.appendChild(li);
     };
+    if (!result.detailUrl) {
+      titleEl.textContent = 'Satıcılar';
+      appendMsg('Bu üründe akakçe karşılaştırma sayfası yok (tek teklif)', 'sellers-empty');
+      return;
+    }
     if (result.sellersLoading) {
+      titleEl.textContent = 'Satıcılar';
       appendMsg('Satıcılar yükleniyor…', 'sellers-loading');
       return;
     }
     if (result.sellersError) {
+      titleEl.textContent = 'Satıcılar';
       appendMsg('Satıcı bilgisi alınamadı', 'sellers-empty');
       return;
     }
     const sellers = result.sellers || [];
     if (sellers.length === 0) {
+      titleEl.textContent = 'Satıcılar';
       appendMsg('Satıcı bulunamadı', 'sellers-empty');
       return;
     }
-    sellers.slice(0, MAX_SELLERS_SHOWN).forEach((seller, i) => {
+    const shown = sellers.slice(0, MAX_SELLERS_SHOWN);
+    titleEl.textContent = result.sellersTotalCount
+      ? `Satıcılar (ilk ${shown.length} / ${result.sellersTotalCount})`
+      : `Satıcılar (ilk ${shown.length})`;
+    shown.forEach((seller, i) => {
       const li = document.createElement('li');
       li.textContent = `${i + 1}. Satıcı — ${seller}`;
       listEl.appendChild(li);
@@ -115,7 +129,7 @@
       node.querySelector('.badge-match').hidden = false;
       node.classList.add('is-match');
     }
-    renderSellersInto(node.querySelector('.sellers-list'), result);
+    renderSellersInto(node.querySelector('.result-sellers'), result);
     const detailBtn = node.querySelector('.btn-detail');
     if (result.detailUrl) {
       detailBtn.addEventListener('click', () => openDetailBrowser(result.detailUrl, activeView));
@@ -143,7 +157,7 @@
     const rows = containerEl.querySelectorAll('.result-row');
     const row = rows[index];
     if (!row) return;
-    renderSellersInto(row.querySelector('.sellers-list'), result);
+    renderSellersInto(row.querySelector('.result-sellers'), result);
   }
 
   async function enrichSellers(results, containerEl) {
@@ -156,6 +170,7 @@
       try {
         const res = await api.getSellers(result.detailUrl);
         result.sellers = res.sellers || [];
+        result.sellersTotalCount = res.totalCount || 0;
         result.sellersLoading = false;
         result.sellersError = !!(res.cloudflareBlocked && result.sellers.length === 0);
       } catch (e) {
