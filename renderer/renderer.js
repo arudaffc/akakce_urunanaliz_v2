@@ -1,6 +1,7 @@
 (function () {
   const api = window.akakceAPI;
   const MAX_SELLER_ENRICH = 10;
+  const MAX_SELLERS_SHOWN = 5;
 
   // ------------------------------------------------------------------ //
   // Yardımcılar
@@ -96,7 +97,7 @@
       appendMsg('Satıcı bulunamadı', 'sellers-empty');
       return;
     }
-    sellers.forEach((seller, i) => {
+    sellers.slice(0, MAX_SELLERS_SHOWN).forEach((seller, i) => {
       const li = document.createElement('li');
       li.textContent = `${i + 1}. Satıcı — ${seller}`;
       listEl.appendChild(li);

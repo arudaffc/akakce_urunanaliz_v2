@@ -278,6 +278,13 @@ button {
   background: var(--accent-soft);
 }
 
+.btn-detail {
+  align-self: flex-start;
+  padding: 5px 12px;
+  font-size: 11.5px;
+  margin-top: 2px;
+}
+
 .icon-btn {
   border: 1px solid var(--border-color);
   background: var(--bg-elevated);

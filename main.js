@@ -132,7 +132,16 @@ function sendNavState() {
 ipcMain.handle('detail:open', async (_event, url) => {
   if (!mainWindow) return false;
   const view = ensureDetailView();
-  await view.webContents.loadURL(url);
+  try {
+    await view.webContents.loadURL(url);
+  } catch (err) {
+    // ERR_ABORTED (-3) genellikle bir sayfanın hemen yönlendirme (redirect)
+    // yapması sırasında orijinal isteğin yeni istekle değiştirilmesinden
+    // kaynaklanır ve zararsızdır; navigasyon normal şekilde tamamlanır.
+    if (err && err.code !== 'ERR_ABORTED') {
+      throw err;
+    }
+  }
   return true;
 });
 
