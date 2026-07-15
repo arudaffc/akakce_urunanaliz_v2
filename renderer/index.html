@@ -92,6 +92,10 @@
               <input type="checkbox" id="single-filter-multi-seller" />
               Yalnızca çok satıcılı
             </label>
+            <label class="toolbar-check">
+              <input type="checkbox" id="single-hide-below" checked />
+              <span id="single-hide-below-label">%30 altını gizle</span>
+            </label>
             <button type="button" class="btn btn-secondary btn-sm" id="single-export-btn">Dışa Aktar (Excel)</button>
           </div>
 
@@ -184,6 +188,18 @@
                 <option value="price-desc">Fiyat (yüksek → düşük)</option>
               </select>
               <span class="settings-hint">Varsayılan: Akakçe Sırası — her yeni aramada sıralama buna döner</span>
+            </div>
+
+            <div class="settings-field">
+              <label class="settings-check settings-toggle" for="setting-hide-below-enabled">
+                <input type="checkbox" id="setting-hide-below-enabled" checked />
+                Yakınlık eşiğinin altını gizle
+              </label>
+              <div class="settings-input-suffix">
+                <input type="number" id="setting-hide-below-threshold" class="settings-input" min="0" max="100" step="1" required />
+                <span class="settings-suffix">%</span>
+              </div>
+              <span class="settings-hint">Varsayılan: açık, %30 — kaydedildikten sonra her aramada korunur (sıfırlanmaz)</span>
             </div>
 
             <div class="settings-actions">

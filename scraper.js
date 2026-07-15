@@ -21,7 +21,7 @@ const { SESSION_PARTITION, USER_AGENT, AKAKCE_ORIGIN } = require('./constants');
 
 const CHALLENGE_TIMEOUT_MS = 25000;
 const POLL_INTERVAL_MS = 500;
-const GRACE_AFTER_LOAD_MS = 1500;
+const GRACE_AFTER_LOAD_MS = 2000;
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 2000;
 
@@ -181,10 +181,14 @@ const EXTRACT_SEARCH_RESULTS_JS = `(() => {
     };
     const extractKargoSeller = (text) => {
       if (!text) return '';
+      const paid = text.match(/[+\\d.,\\s]*TL\\s*[Kk]argo\\s*([A-Za-zğüşıöçĞÜŞİÖÇ][A-Za-z0-9ğüşıöçĞÜŞİÖÇ._& -]{1,38})\\s*$/);
+      if (paid) return paid[1].trim();
       const tail = text.match(/(?:Ücretsiz\\s+)?[Kk]argo\\s*([A-Za-zğüşıöçĞÜŞİÖÇ][A-Za-z0-9ğüşıöçĞÜŞİÖÇ._& -]{1,38})\\s*$/);
       if (tail) return tail[1].trim();
-      const inline = text.match(/(?:Ücretsiz\\s+)?[Kk]argo\\s*([A-Za-zğüşıöçĞÜŞİÖÇ][A-Za-z0-9ğüşıöçĞÜŞİÖÇ._& -]{1,38})(?=\\s|$)/);
-      return inline ? inline[1].trim() : '';
+      const inline = text.match(/(?:Ücretsiz\\s+)?[+\\d.,\\s]*TL\\s*[Kk]argo\\s*([A-Za-zğüşıöçĞÜŞİÖÇ][A-Za-z0-9ğüşıöçĞÜŞİÖÇ._& -]{1,38})(?=\\s|$)/);
+      if (inline) return inline[1].trim();
+      const plain = text.match(/[Kk]argo\\s*([A-Za-zğüşıöçĞÜŞİÖÇ][A-Za-z0-9ğüşıöçĞÜŞİÖÇ._& -]{1,38})\\s*$/);
+      return plain ? plain[1].trim() : '';
     };
     const KNOWN_VENDORS = {
       '786': 'TeknoBiyotik',
@@ -235,7 +239,7 @@ const EXTRACT_SEARCH_RESULTS_JS = `(() => {
       return sellers;
     }
     const multiOffers = extractMultiSellerOffers();
-    if (multiOffers.length > 1) {
+    if (multiOffers.length > 0) {
       for (const offer of multiOffers) add(offer.name, offer.price);
       if (sellers.length > 0) return sellers;
     }
@@ -264,7 +268,9 @@ const EXTRACT_SEARCH_RESULTS_JS = `(() => {
       if (/,.+\\.html$/i.test(href)) continue;
       add(label, normalizedPrice);
     }
-    const storeEls = container.querySelectorAll('[class*="vd_"], [class*="pg_n"], [class*="seller"], [class*="store"], [class*="merchant"]');
+    const storeEls = container.querySelectorAll(
+      '[class*="vd_"], [class*="pg_n"], [class*="seller"], [class*="store"], [class*="merchant"], span.l b, .l b, a.iC b'
+    );
     for (const el of storeEls) {
       add(textOf(el), normalizedPrice);
     }
@@ -298,7 +304,9 @@ const EXTRACT_SEARCH_RESULTS_JS = `(() => {
   function pickCardDetailUrl(li) {
     const comparison = li.querySelector('a[href*=","][href$=".html"]');
     if (comparison) return absUrl(comparison.getAttribute('href') || '');
-    const redirect = li.querySelector('a[href*="/c/"][href*="v="], a[href*="/c/"][title*="Satıcıya"]');
+    const redirect = li.querySelector(
+      'a.iC[href*="/c/"], a[href*="/c/"][href*="v="], a[href*="/c/"][title*="Satıcıya"]'
+    );
     if (redirect) return absUrl(redirect.getAttribute('href') || '');
     const titled = li.querySelector('a[title][href]');
     if (titled) return absUrl(titled.getAttribute('href') || '');
@@ -319,6 +327,23 @@ const EXTRACT_SEARCH_RESULTS_JS = `(() => {
   }
   function titleKey(t) {
     return (t || '').toLocaleLowerCase('tr-TR').replace(/\\s+/g, ' ').trim();
+  }
+  function productCodeKey(value) {
+    const m = String(value || '').match(/(\\d{6,})/);
+    return m ? m[1] : '';
+  }
+  function findCardForResult(result, cards) {
+    const rKey = titleKey(result.title);
+    const rCode = String(result.code || productCodeKey(result.title) || '');
+    let card = cards.find((c) => {
+      const cKey = titleKey(c.title);
+      if (!cKey || !rKey) return false;
+      return cKey.includes(rKey.slice(0, 35)) || rKey.includes(cKey.slice(0, 35));
+    });
+    if (!card && rCode) {
+      card = cards.find((c) => productCodeKey(c.detailUrl) === rCode || productCodeKey(c.title) === rCode);
+    }
+    return card;
   }
   function collectDomProductCards() {
     const items = Array.from(document.querySelectorAll(
@@ -358,11 +383,7 @@ const EXTRACT_SEARCH_RESULTS_JS = `(() => {
       let card = cards[i];
       const rKey = titleKey(result.title);
       if (!card || !rKey || !(titleKey(card.title).includes(rKey.slice(0, 35)) || rKey.includes(titleKey(card.title).slice(0, 35)))) {
-        card = cards.find((c) => {
-          const cKey = titleKey(c.title);
-          if (!cKey || !rKey) return false;
-          return cKey.includes(rKey.slice(0, 35)) || rKey.includes(cKey.slice(0, 35));
-        });
+        card = findCardForResult(result, cards);
       }
       if (!card) continue;
       if ((!result.sellers || result.sellers.length === 0) && card.sellers.length > 0) {
@@ -380,11 +401,12 @@ const EXTRACT_SEARCH_RESULTS_JS = `(() => {
     const sellers = extractSellersFromProduct(p);
     const detailUrl = pickProductUrl(p);
     const count = p.countOfPrices || sellers.length || 0;
-    const isSingle = count <= 1;
+    const isSingle = count <= 1 || sellers.length === 1;
     return {
       title: p.name,
       detailUrl,
       price: formatPrice(p.price),
+      code: p.code || p.id || '',
       sellerCountText: count > 1 ? (count + ' Satıcı') : (isSingle ? '1 Satıcı' : ''),
       sellers,
       sellersTotalCount: count || sellers.length,
@@ -710,13 +732,38 @@ class AkakceScraper {
       return { term, url, cloudflareBlocked: false, error: e.message, results: [] };
     }
     const waitResult = await this._waitForReadyState(
-      `document.querySelector('astro-island[props], #APL, .search_v8') || document.body.innerText.length > 800`
+      `(function() {
+        const hasIsland = !!document.querySelector('astro-island[props]');
+        const cards = document.querySelectorAll('#APL > li, ul[id="APL"] li, .search_v8 li');
+        let priced = 0;
+        let withSeller = 0;
+        for (const li of cards) {
+          const text = (li.textContent || '').replace(/\\s+/g, ' ');
+          if (/\\d+[.,]\\d{2}\\s*TL/i.test(text)) priced += 1;
+          if (/kargo/i.test(text) || li.querySelector('a.iC, span.l b, .l b')) withSeller += 1;
+        }
+        return hasIsland && priced > 0 && (withSeller > 0 || priced >= 2);
+      })()`
     );
-    let data = { results: [] };
-    try {
-      data = await win.webContents.executeJavaScript(EXTRACT_SEARCH_RESULTS_JS);
-    } catch (e) {
-      data = { results: [] };
+    const extractResults = async () => {
+      try {
+        return await win.webContents.executeJavaScript(EXTRACT_SEARCH_RESULTS_JS);
+      } catch (e) {
+        return { results: [] };
+      }
+    };
+    let data = await extractResults();
+    const needsSellerRetry = (results) =>
+      Array.isArray(results) &&
+      results.some((r) => {
+        const likelySingle =
+          r.singleOffer || r.sellerCountText === '1 Satıcı' || /TEK\\s*F[Iİ]YAT/i.test(r.price || '');
+        const missingSellers = !Array.isArray(r.sellers) || r.sellers.length === 0;
+        return likelySingle && missingSellers;
+      });
+    if (needsSellerRetry(data.results)) {
+      await new Promise((r) => setTimeout(r, 2000));
+      data = await extractResults();
     }
     return {
       term,

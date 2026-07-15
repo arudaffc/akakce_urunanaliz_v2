@@ -255,6 +255,21 @@ button {
   line-height: 1.45;
 }
 
+.settings-check,
+.settings-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.settings-check input,
+.settings-toggle input {
+  accent-color: var(--accent);
+}
+
 .settings-actions {
   display: flex;
   flex-wrap: wrap;

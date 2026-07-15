@@ -7,6 +7,8 @@
     maxSellers: 5,
     skipTitleThreshold: 50,
     defaultSort: 'rank',
+    hideBelowEnabled: true,
+    hideBelowThreshold: 30,
   };
 
   let appSettings = loadAppSettings();
@@ -29,6 +31,15 @@
         defaultSort: ['rank', 'similarity-desc', 'price-asc', 'price-desc'].includes(parsed.defaultSort)
           ? parsed.defaultSort
           : DEFAULT_SETTINGS.defaultSort,
+        hideBelowEnabled: typeof parsed.hideBelowEnabled === 'boolean'
+          ? parsed.hideBelowEnabled
+          : DEFAULT_SETTINGS.hideBelowEnabled,
+        hideBelowThreshold: clampNumber(
+          parsed.hideBelowThreshold,
+          0,
+          100,
+          DEFAULT_SETTINGS.hideBelowThreshold
+        ),
       };
     } catch (e) {
       return { ...DEFAULT_SETTINGS };
@@ -43,6 +54,16 @@
       defaultSort: ['rank', 'similarity-desc', 'price-asc', 'price-desc'].includes(nextSettings.defaultSort)
         ? nextSettings.defaultSort
         : DEFAULT_SETTINGS.defaultSort,
+      hideBelowEnabled:
+        typeof nextSettings.hideBelowEnabled === 'boolean'
+          ? nextSettings.hideBelowEnabled
+          : DEFAULT_SETTINGS.hideBelowEnabled,
+      hideBelowThreshold: clampNumber(
+        nextSettings.hideBelowThreshold,
+        0,
+        100,
+        DEFAULT_SETTINGS.hideBelowThreshold
+      ),
     };
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(appSettings));
     applyAppSettingsToUi();
@@ -66,12 +87,39 @@
     }
   }
 
+  function getHideBelowThreshold() {
+    return appSettings.hideBelowThreshold;
+  }
+
+  function updateHideBelowLabel() {
+    const labelEl = document.getElementById('single-hide-below-label');
+    if (labelEl) {
+      labelEl.textContent = `%${getHideBelowThreshold()} altını gizle`;
+    }
+  }
+
+  function syncHideBelowFromSavedSettings() {
+    appSettings = loadAppSettings();
+    updateHideBelowLabel();
+    if (singleHideBelowEl) singleHideBelowEl.checked = appSettings.hideBelowEnabled;
+    if (settingsHideBelowEnabledEl) settingsHideBelowEnabledEl.checked = appSettings.hideBelowEnabled;
+    if (settingsHideBelowThresholdEl) {
+      settingsHideBelowThresholdEl.value = String(appSettings.hideBelowThreshold);
+    }
+  }
+
   function applyAppSettingsToUi() {
     updateSkipOptionLabel();
+    updateHideBelowLabel();
     if (settingsMaxProductsEl) settingsMaxProductsEl.value = String(appSettings.maxProducts);
     if (settingsMaxSellersEl) settingsMaxSellersEl.value = String(appSettings.maxSellers);
     if (settingsSkipThresholdEl) settingsSkipThresholdEl.value = String(appSettings.skipTitleThreshold);
     if (settingsDefaultSortEl) settingsDefaultSortEl.value = appSettings.defaultSort;
+    if (settingsHideBelowEnabledEl) settingsHideBelowEnabledEl.checked = appSettings.hideBelowEnabled;
+    if (settingsHideBelowThresholdEl) {
+      settingsHideBelowThresholdEl.value = String(appSettings.hideBelowThreshold);
+    }
+    if (singleHideBelowEl) singleHideBelowEl.checked = appSettings.hideBelowEnabled;
   }
 
   function readSettingsFormValues() {
@@ -80,6 +128,12 @@
       maxSellers: settingsMaxSellersEl ? settingsMaxSellersEl.value : DEFAULT_SETTINGS.maxSellers,
       skipTitleThreshold: settingsSkipThresholdEl ? settingsSkipThresholdEl.value : DEFAULT_SETTINGS.skipTitleThreshold,
       defaultSort: settingsDefaultSortEl ? settingsDefaultSortEl.value : DEFAULT_SETTINGS.defaultSort,
+      hideBelowEnabled: settingsHideBelowEnabledEl
+        ? settingsHideBelowEnabledEl.checked
+        : DEFAULT_SETTINGS.hideBelowEnabled,
+      hideBelowThreshold: settingsHideBelowThresholdEl
+        ? settingsHideBelowThresholdEl.value
+        : DEFAULT_SETTINGS.hideBelowThreshold,
     };
   }
 
@@ -470,6 +524,28 @@
     return /,\d+\.html(?:[?#]|$)/i.test(url || '');
   }
 
+  function isRedirectDetailUrl(url) {
+    return /\/c\/\?/i.test(url || '');
+  }
+
+  function looksLikeSingleOffer(result) {
+    return !!(
+      result.singleOffer ||
+      result.sellerCountText === '1 Satıcı' ||
+      result.sellersTotalCount === 1 ||
+      /TEK\s*F[İI]YAT/i.test(result.price || '')
+    );
+  }
+
+  function shouldUsePrefetchedSellers(result) {
+    if (!hasPrefetchedSellers(result)) return false;
+    return (
+      looksLikeSingleOffer(result) ||
+      !isComparisonDetailUrl(result.detailUrl) ||
+      isRedirectDetailUrl(result.detailUrl)
+    );
+  }
+
   function getFilterSortSettings(prefix) {
     const sortEl = document.getElementById(`${prefix}-sort`);
     const simEl = document.getElementById(`${prefix}-filter-sim`);
@@ -478,6 +554,10 @@
       sort: sortEl ? sortEl.value : 'rank',
       minSimilarity: simEl ? parseInt(simEl.value, 10) : 0,
       multiSellerOnly: multiEl ? multiEl.checked : false,
+      hideBelowEnabled: singleHideBelowEl
+        ? singleHideBelowEl.checked
+        : appSettings.hideBelowEnabled,
+      hideBelowThreshold: getHideBelowThreshold(),
     };
   }
 
@@ -485,6 +565,9 @@
     let list = results.map((r, idx) => ({ ...r, akakceRank: r.akakceRank ?? idx + 1 }));
     if (settings.minSimilarity > 0) {
       list = list.filter((r) => r.similarity >= settings.minSimilarity);
+    }
+    if (settings.hideBelowEnabled && settings.hideBelowThreshold > 0) {
+      list = list.filter((r) => r.similarity >= settings.hideBelowThreshold);
     }
     if (settings.multiSellerOnly) {
       list = list.filter((r) => hasMultipleSellers(r));
@@ -782,9 +865,7 @@
       }
 
       const canFetch = !!result.detailUrl && isComparisonDetailUrl(result.detailUrl);
-      const usePrefetchOnly =
-        hasPrefetchedSellers(result) &&
-        (result.singleOffer || result.sellersTotalCount <= 1 || !isComparisonDetailUrl(result.detailUrl));
+      const usePrefetchOnly = shouldUsePrefetchedSellers(result);
       if (!canFetch && !usePrefetchOnly) continue;
       if (canFetch) {
         result.sellersLoading = true;
@@ -807,7 +888,7 @@
         continue;
       }
 
-      if (hasPrefetchedSellers(result) && (result.singleOffer || result.sellersTotalCount <= 1)) {
+      if (shouldUsePrefetchedSellers(result)) {
         result.sellersLoading = false;
         result.contentScanPending = false;
         if (term) {
@@ -820,8 +901,11 @@
       }
 
       if (!result.detailUrl || !isComparisonDetailUrl(result.detailUrl)) {
+        result.sellersLoading = false;
         if (hasPrefetchedSellers(result)) {
-          result.sellersLoading = false;
+          updateSellerRowInPlace(containerEl, result, settings, term);
+        } else if (looksLikeSingleOffer(result)) {
+          result.sellersError = false;
           updateSellerRowInPlace(containerEl, result, settings, term);
         }
         continue;
@@ -966,7 +1050,9 @@
       if (shouldSkipDetailScan(result)) {
         markDetailScanSkipped(result);
       } else if (hasPrefetchedSellers(result)) {
-        result.contentScanPending = !!result.detailUrl && !result.singleOffer;
+        result.contentScanPending = !!result.detailUrl && !result.singleOffer && isComparisonDetailUrl(result.detailUrl);
+      } else if (looksLikeSingleOffer(result)) {
+        result.sellersLoading = true;
       }
       return result;
     });
@@ -994,6 +1080,7 @@
   const singleSortEl = document.getElementById('single-sort');
   const singleFilterSimEl = document.getElementById('single-filter-sim');
   const singleFilterMultiEl = document.getElementById('single-filter-multi-seller');
+  const singleHideBelowEl = document.getElementById('single-hide-below');
   const singleExportBtn = document.getElementById('single-export-btn');
   const optSkipLowContentEl = document.getElementById('opt-skip-low-content');
 
@@ -1036,6 +1123,8 @@
     if (singleSortEl) singleSortEl.value = getDefaultSort();
     if (singleFilterSimEl) singleFilterSimEl.value = 'all';
     if (singleFilterMultiEl) singleFilterMultiEl.checked = false;
+    // Yakınlık eşiği ayarlardan kalıcıdır; sıralama ve diğer filtreler gibi sıfırlanmaz.
+    updateHideBelowLabel();
   }
 
   function refreshSingleResultsView() {
@@ -1049,6 +1138,15 @@
     el.addEventListener('change', refreshSingleResultsView);
   });
   singleFilterMultiEl.addEventListener('change', refreshSingleResultsView);
+
+  if (singleHideBelowEl) {
+    singleHideBelowEl.addEventListener('change', () => {
+      appSettings.hideBelowEnabled = singleHideBelowEl.checked;
+      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(appSettings));
+      if (settingsHideBelowEnabledEl) settingsHideBelowEnabledEl.checked = appSettings.hideBelowEnabled;
+      refreshSingleResultsView();
+    });
+  }
 
   if (optSkipLowContentEl) {
     optSkipLowContentEl.addEventListener('change', () => {
@@ -1076,6 +1174,8 @@
   const settingsMaxSellersEl = document.getElementById('setting-max-sellers');
   const settingsSkipThresholdEl = document.getElementById('setting-skip-threshold');
   const settingsDefaultSortEl = document.getElementById('setting-default-sort');
+  const settingsHideBelowEnabledEl = document.getElementById('setting-hide-below-enabled');
+  const settingsHideBelowThresholdEl = document.getElementById('setting-hide-below-threshold');
   const settingsResetBtn = document.getElementById('settings-reset-btn');
   const settingsStatusEl = document.getElementById('settings-status');
 
@@ -1112,16 +1212,24 @@
     }
   } else {
     updateSkipOptionLabel();
+    updateHideBelowLabel();
+    if (singleHideBelowEl) singleHideBelowEl.checked = appSettings.hideBelowEnabled;
   }
 
   singleExportBtn.addEventListener('click', () => {
     if (!singleScanContext) return;
+    const settings = getFilterSortSettings('single');
+    const filteredResults = filterAndSortResults(singleScanContext.results || [], settings);
+    if (filteredResults.length === 0) {
+      alert('Dışa aktarılacak filtrelenmiş sonuç yok.');
+      return;
+    }
     const stamp = new Date().toISOString().slice(0, 10);
     exportOutcomes(
       [
         {
           term: singleScanContext.term,
-          results: singleScanContext.results,
+          results: filteredResults,
           cloudflareBlocked: singleScanContext.cloudflareBlocked,
           statusText: 'Tamam',
         },
@@ -1135,6 +1243,7 @@
     const term = singleInput.value.trim();
     if (!term) return;
 
+    syncHideBelowFromSavedSettings();
     resetSingleToolbarFilters();
 
     singleScanControl = createScanController();
