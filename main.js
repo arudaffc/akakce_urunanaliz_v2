@@ -1,6 +1,36 @@
 const { app, BrowserWindow, BrowserView, ipcMain, dialog, Menu, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
+
+// ---------------------------------------------------------------------------
+// Chromium önbellek / log ayarları (app.ready ÖNCESİNDE çalışmalı)
+// ---------------------------------------------------------------------------
+// Varsayılan "Electron" userData klasörü birden fazla npm start ile çakışınca
+// "Erişim engellendi (0x5)" ve quota_database hataları üretir. Uygulamaya özel
+// bir klasör + tek örnek kilidi bu sorunları büyük ölçüde önler.
+const userDataPath = path.join(app.getPath('appData'), 'akakce-urun-analiz');
+app.setPath('userData', userDataPath);
+
+const cacheDir = path.join(userDataPath, 'chromium-cache');
+try {
+  fs.mkdirSync(cacheDir, { recursive: true });
+} catch (_) {
+  /* klasör zaten var veya oluşturulamadı */
+}
+
+app.commandLine.appendSwitch('disk-cache-dir', cacheDir);
+app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+// Akakçe sayfalarının WebRTC/STUN denemelerinden gelen terminal gürültüsünü azaltır.
+app.commandLine.appendSwitch('force-webrtc-ip-handling-policy', 'disable_non_proxied_udp');
+app.commandLine.appendSwitch('disable-logging');
+app.commandLine.appendSwitch('log-level', '3');
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+  process.exit(0);
+}
+
 const scraper = require('./scraper');
 const { SESSION_PARTITION, USER_AGENT } = require('./constants');
 
@@ -38,7 +68,22 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  const akakceSession = session.fromPartition(SESSION_PARTITION);
+  akakceSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    const blocked = ['media', 'display-capture', 'pointerLock', 'fullscreen'];
+    callback(!blocked.includes(permission));
+  });
+
+  createWindow();
+});
+
+app.on('second-instance', () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
