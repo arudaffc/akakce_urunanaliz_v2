@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; img-src 'self' data: https:;" />
+    <title>Akakçe Ürün Analiz</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="titlebar">
+      <div class="titlebar-drag">
+        <span class="app-icon">AÜ</span>
+        <span class="app-title">Akakçe Ürün Analiz</span>
+      </div>
+      <div class="titlebar-controls">
+        <button id="btn-minimize" class="titlebar-btn" title="Küçült">&#x2013;</button>
+        <button id="btn-close" class="titlebar-btn titlebar-btn-close" title="Kapat">&#x2715;</button>
+      </div>
+    </div>
+
+    <div class="app-shell">
+      <aside class="sidebar">
+        <nav class="sidebar-nav">
+          <button class="nav-btn is-active" data-view="single" type="button">
+            <span class="nav-icon">&#128269;</span>
+            <span>Tek Ürün Tarama</span>
+          </button>
+          <button class="nav-btn" data-view="multi" type="button">
+            <span class="nav-icon">&#128203;</span>
+            <span>Çoklu Ürün Tarama</span>
+          </button>
+        </nav>
+        <div class="sidebar-footer">Akakçe Ürün Analiz</div>
+      </aside>
+
+      <main class="content">
+        <!-- Tek Ürün Tarama -->
+        <section class="view" id="view-single">
+          <header class="view-header">
+            <h1>Tek Ürün Tarama</h1>
+            <p class="view-subtitle">Bir ürün/kod arayın; Akakçe sonuçlarında sıralanıp sıralanmadığını, hangi ürün ve satıcıların çıktığını görün.</p>
+          </header>
+
+          <form class="search-bar" id="single-search-form">
+            <input
+              type="text"
+              id="single-search-input"
+              class="search-input"
+              placeholder="Aranan Değer (örn. DK-HD-CV14L150A90)"
+              autocomplete="off"
+            />
+            <button type="submit" class="btn btn-primary" id="single-search-btn">Ara</button>
+          </form>
+
+          <div class="scan-summary" id="single-summary" hidden></div>
+          <div class="results-list" id="single-results"></div>
+        </section>
+
+        <!-- Çoklu Ürün Tarama -->
+        <section class="view" id="view-multi" hidden>
+          <header class="view-header">
+            <h1>Çoklu Ürün Tarama</h1>
+            <p class="view-subtitle">Birden çok arama terimini içeren bir .txt/.csv dosyası yükleyin; her terim için ayrı ayrı tam sonuç listesi ve satıcı tablosu görün.</p>
+          </header>
+
+          <div class="multi-toolbar">
+            <button type="button" class="btn btn-secondary" id="multi-pick-file-btn">Dosya Seç (.txt / .csv)</button>
+            <span class="multi-file-info" id="multi-file-info">Dosya seçilmedi</span>
+            <button type="button" class="btn btn-primary" id="multi-start-btn" disabled>Taramayı Başlat</button>
+          </div>
+
+          <div class="multi-progress" id="multi-progress" hidden>
+            <div class="progress-track"><div class="progress-fill" id="multi-progress-fill"></div></div>
+            <span class="progress-label" id="multi-progress-label"></span>
+          </div>
+
+          <div class="scan-groups" id="multi-groups"></div>
+        </section>
+
+        <!-- Detay: uygulama içi gömülü tarayıcı -->
+        <section class="view detail-view" id="view-detail" hidden>
+          <div class="detail-toolbar">
+            <button type="button" class="btn btn-secondary" id="detail-back-app">&#8592; Sonuçlara Dön</button>
+            <div class="detail-nav-controls">
+              <button type="button" class="icon-btn" id="detail-nav-back" title="Geri">&#9664;</button>
+              <button type="button" class="icon-btn" id="detail-nav-forward" title="İleri">&#9654;</button>
+              <button type="button" class="icon-btn" id="detail-nav-reload" title="Yenile">&#8635;</button>
+            </div>
+            <div class="detail-url" id="detail-url"></div>
+          </div>
+          <div class="detail-browser-container" id="detail-browser-container"></div>
+        </section>
+      </main>
+    </div>
+
+    <template id="tpl-result-row">
+      <article class="result-row">
+        <div class="result-main">
+          <div class="result-title-row">
+            <span class="result-rank"></span>
+            <span class="result-title"></span>
+            <span class="badge badge-match" hidden>Eşleşti</span>
+          </div>
+          <div class="result-meta">
+            <span class="result-price"></span>
+            <span class="result-seller-count"></span>
+          </div>
+          <button type="button" class="btn btn-outline btn-detail">Detay</button>
+        </div>
+        <div class="result-sellers">
+          <div class="sellers-title">Satıcılar</div>
+          <ol class="sellers-list"></ol>
+        </div>
+      </article>
+    </template>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>
