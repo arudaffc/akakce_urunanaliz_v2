@@ -97,37 +97,49 @@
     return 'low';
   }
 
-  // Başlık yakınlığı ile ürün detay sayfası içeriğindeki yakınlığın
-  // en yüksek değerini kullan (içerikte kod/ad geçiyorsa yükselir).
-  function recomputeSimilarity(term, result, contentText) {
-    const titleSim = computeSimilarity(term, result.title || '');
-    const contentSim = contentText ? computeSimilarity(term, contentText) : 0;
-    result.similarityTitle = titleSim;
-    result.similarityContent = contentSim;
-    result.similarity = Math.max(titleSim, contentSim);
-    result.similarityUsesContent = contentSim > titleSim;
-  }
-
   function applySimilarityBadge(similarityBadge, result, row) {
     similarityBadge.classList.remove('badge-high', 'badge-medium', 'badge-low', 'badge-loading');
     similarityBadge.title = '';
 
-    if (result.similarityLoading) {
-      similarityBadge.textContent = 'Yakınlık Yükleniyor';
-      similarityBadge.classList.add('badge-loading');
-      if (row) row.classList.remove('is-match');
-      return;
-    }
-
     const tier = similarityTier(result.similarity);
-    similarityBadge.textContent = result.similarityScannedContent
+    const label = result.similarityUsesContent
       ? `%${result.similarity} yakınlık (içerik)`
       : `%${result.similarity} yakınlık`;
-    similarityBadge.title = result.similarityScannedContent
-      ? `Başlık: %${result.similarityTitle ?? result.similarity}, detay içeriği: %${result.similarityContent ?? 0}`
-      : '';
+    similarityBadge.textContent = result.contentScanPending ? `${label} · taranıyor` : label;
+
+    if (result.similarityScannedContent || result.similarityContent > 0) {
+      similarityBadge.title = `Başlık: %${result.similarityTitle ?? result.similarity}, detay içeriği: %${result.similarityContent ?? 0}`;
+    }
+
     similarityBadge.classList.add('badge-' + tier);
     if (row) row.classList.toggle('is-match', tier === 'high');
+  }
+
+  function initTitleSimilarity(term, result) {
+    const titleSim = computeSimilarity(term, result.title || '');
+    result.similarity = titleSim;
+    result.similarityTitle = titleSim;
+    result.similarityContent = 0;
+    result.similarityUsesContent = false;
+    result.similarityScannedContent = false;
+    result.contentScanPending = !!result.detailUrl;
+  }
+
+  function enhanceSimilarityFromContent(term, result, contentText) {
+    const titleSim = result.similarityTitle ?? computeSimilarity(term, result.title || '');
+    result.similarityTitle = titleSim;
+    const contentSim = contentText ? computeSimilarity(term, contentText) : 0;
+    result.similarityContent = contentSim;
+    result.contentScanPending = false;
+    result.similarityScannedContent = !!contentText;
+
+    if (contentSim > titleSim) {
+      result.similarity = contentSim;
+      result.similarityUsesContent = true;
+    } else {
+      result.similarity = titleSim;
+      result.similarityUsesContent = false;
+    }
   }
 
   // ------------------------------------------------------------------ //
@@ -266,25 +278,12 @@
     applySimilarityBadge(similarityBadge, result, row);
   }
 
-  function finalizeSimilarity(term, result, contentText) {
-    result.similarityScannedContent = true;
-    if (contentText) {
-      recomputeSimilarity(term, result, contentText);
-    } else {
-      result.similarity = computeSimilarity(term, result.title || '');
-      result.similarityTitle = result.similarity;
-      result.similarityContent = 0;
-      result.similarityUsesContent = false;
-    }
-    result.similarityLoading = false;
-  }
-
   function finalizeStuckSimilarity(term, results, containerEl, summaryEl) {
     let changed = false;
     for (let i = 0; i < results.length; i++) {
       const result = results[i];
-      if (!result.similarityLoading) continue;
-      finalizeSimilarity(term, result, '');
+      if (!result.contentScanPending) continue;
+      enhanceSimilarityFromContent(term, result, '');
       updateSimilarityRowInPlace(containerEl, i, result);
       changed = true;
     }
@@ -299,9 +298,7 @@
     for (let i = 0; i < results.length; i++) {
       if (results[i].detailUrl) {
         results[i].sellersLoading = true;
-        results[i].similarityLoading = true;
         updateSellerRowInPlace(containerEl, i, results[i]);
-        updateSimilarityRowInPlace(containerEl, i, results[i]);
       }
     }
 
@@ -317,14 +314,14 @@
         result.sellersLoading = false;
         result.sellersError = !!(res.cloudflareBlocked && result.sellers.length === 0);
         if (term) {
-          finalizeSimilarity(term, result, res.contentText || '');
+          enhanceSimilarityFromContent(term, result, res.contentText || '');
           updateSimilarityRowInPlace(containerEl, i, result);
         }
       } catch (e) {
         result.sellersLoading = false;
         result.sellersError = true;
         if (term) {
-          finalizeSimilarity(term, result, '');
+          enhanceSimilarityFromContent(term, result, '');
           updateSimilarityRowInPlace(containerEl, i, result);
         }
       }
@@ -348,33 +345,36 @@
     chips.push({ text: `${results.length} sonuç bulundu`, type: 'default' });
     const first = results[0];
     if (first) {
-      if (first.similarityLoading) {
-        chips.push({ text: 'İlk sonuç yakınlığı hesaplanıyor…', type: 'default' });
+      if (first.contentScanPending) {
+        chips.push({
+          text: `İlk sonuç başlıkta %${first.similarity} — detay içeriği taranıyor…`,
+          type: 'default',
+        });
       } else {
         chips.push(
           first.similarity >= MATCH_THRESHOLD
             ? {
-                text: first.similarityScannedContent
-                  ? `İlk sonuç detay içeriğinde %${first.similarity} oranında eşleşti`
+                text: first.similarityUsesContent
+                  ? `İlk sonuç detay içeriğinde %${first.similarity} oranında eşleşti (başlık: %${first.similarityTitle})`
                   : `İlk sonuç %${first.similarity} oranında eşleşti`,
                 type: 'success',
               }
             : {
-                text: first.similarityScannedContent
-                  ? `İlk sonuç detay içeriğinde yalnızca %${first.similarity} oranında eşleşti`
+                text: first.similarityUsesContent
+                  ? `İlk sonuç detay içeriğinde %${first.similarity} oranında eşleşti (başlık: %${first.similarityTitle})`
                   : `İlk sonuç yalnızca %${first.similarity} oranında eşleşti`,
                 type: 'danger',
               }
         );
       }
     }
-    if (results.some((r) => r.similarityLoading)) {
-      chips.push({ text: 'Bazı sonuçların yakınlığı hesaplanıyor…', type: 'default' });
+    if (results.some((r) => r.contentScanPending)) {
+      chips.push({ text: 'Bazı sonuçların detay içeriği taranıyor…', type: 'default' });
     }
-    if (results.slice(1).some((r) => !r.similarityLoading && r.similarity >= MATCH_THRESHOLD)) {
+    if (results.slice(1).some((r) => !r.contentScanPending && r.similarity >= MATCH_THRESHOLD)) {
       chips.push({ text: 'Aranan değer başka sonuçlarda da geçiyor', type: 'default' });
     }
-    const finalized = results.filter((r) => !r.similarityLoading);
+    const finalized = results.filter((r) => !r.contentScanPending);
     const nonMatching = finalized.filter((r) => r.similarity < MATCH_THRESHOLD).length;
     if (nonMatching > 0) {
       chips.push({ text: `${nonMatching} farklı/düşük yakınlıklı ürün listelendi`, type: 'default' });
@@ -411,16 +411,11 @@
         sellersError: false,
         similarityUsesContent: false,
         similarityScannedContent: false,
+        contentScanPending: false,
       };
-      // Detay sayfası olan tüm sonuçlarda yakınlık, içerik taranana kadar bekletilir.
-      if (r.detailUrl) {
-        return { ...base, similarityLoading: true, similarity: 0 };
-      }
-      return {
-        ...base,
-        similarityLoading: false,
-        similarity: computeSimilarity(term, r.title),
-      };
+      const result = { ...base };
+      initTitleSimilarity(term, result);
+      return result;
     });
     return {
       term,

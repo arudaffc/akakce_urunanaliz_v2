@@ -453,6 +453,8 @@ button {
   letter-spacing: 0;
   font-weight: 600;
 }
+
+.badge-similarity.badge-high {
   background: var(--success-soft);
   color: var(--success);
   border: 1px solid rgba(56, 199, 147, 0.4);
