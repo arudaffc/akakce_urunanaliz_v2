@@ -422,12 +422,18 @@ button {
 }
 
 .result-title {
+  flex: 1;
+  min-width: 0;
   font-size: 14.5px;
   font-weight: 600;
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.badge-similarity {
+  flex-shrink: 0;
 }
 
 .badge {
@@ -439,10 +445,22 @@ button {
   letter-spacing: 0.3px;
 }
 
-.badge-match {
+.badge-similarity.badge-high {
   background: var(--success-soft);
   color: var(--success);
   border: 1px solid rgba(56, 199, 147, 0.4);
+}
+
+.badge-similarity.badge-medium {
+  background: rgba(232, 179, 57, 0.14);
+  color: var(--warning);
+  border: 1px solid rgba(232, 179, 57, 0.4);
+}
+
+.badge-similarity.badge-low {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border: 1px solid rgba(239, 91, 91, 0.4);
 }
 
 .result-meta {

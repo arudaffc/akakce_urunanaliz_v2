@@ -2,6 +2,7 @@
   const api = window.akakceAPI;
   const MAX_SELLER_ENRICH = 10;
   const MAX_SELLERS_SHOWN = 5;
+  const MATCH_THRESHOLD = 80;
 
   // ------------------------------------------------------------------ //
   // Yardımcılar
@@ -21,14 +22,80 @@
       .trim();
   }
 
-  function isMatch(term, title) {
+  // Levenshtein (düzenleme) uzaklığı — iki dize arasında birini diğerine
+  // çevirmek için gereken minimum ekleme/silme/değiştirme sayısı.
+  function levenshteinDistance(a, b) {
+    const m = a.length;
+    const n = b.length;
+    if (m === 0) return n;
+    if (n === 0) return m;
+    const dp = new Array(n + 1);
+    for (let j = 0; j <= n; j++) dp[j] = j;
+    for (let i = 1; i <= m; i++) {
+      let prev = dp[0];
+      dp[0] = i;
+      for (let j = 1; j <= n; j++) {
+        const temp = dp[j];
+        dp[j] = a[i - 1] === b[j - 1] ? prev : 1 + Math.min(prev, dp[j], dp[j - 1]);
+        prev = temp;
+      }
+    }
+    return dp[n];
+  }
+
+  function levenshteinSimilarity(a, b) {
+    const maxLen = Math.max(a.length, b.length);
+    if (maxLen === 0) return 1;
+    return 1 - levenshteinDistance(a, b) / maxLen;
+  }
+
+  // Aranan terimin token'larının (kelime/kod parçalarının) başlıkta ne
+  // ölçüde geçtiğini ölçer (tam veya alt-dize olarak).
+  function tokenOverlapScore(termTokens, titleTokens) {
+    if (termTokens.length === 0) return 0;
+    let matched = 0;
+    for (const t of termTokens) {
+      if (titleTokens.includes(t)) {
+        matched += 1;
+      } else if (titleTokens.some((tt) => tt.length > 1 && (tt.includes(t) || t.includes(tt)))) {
+        matched += 0.7;
+      }
+    }
+    return Math.min(1, matched / termTokens.length);
+  }
+
+  // Aranan değer ile bir sonuç başlığı arasındaki yakınlık derecesini
+  // 0-100 arası bir yüzde olarak hesaplar (tam içerme, token örtüşmesi ve
+  // en iyi hizalanan alt-dizenin düzenleme uzaklığı benzerliğinin birleşimi).
+  function computeSimilarity(term, title) {
     const nTerm = normalize(term);
     const nTitle = normalize(title);
-    if (!nTerm || !nTitle) return false;
-    if (nTitle.includes(nTerm)) return true;
-    const tokens = nTerm.split(' ').filter((t) => t.length > 1);
-    if (tokens.length === 0) return false;
-    return tokens.every((t) => nTitle.includes(t));
+    if (!nTerm || !nTitle) return 0;
+    if (nTitle.includes(nTerm)) return 100;
+
+    const termTokens = nTerm.split(' ').filter(Boolean);
+    const titleTokens = nTitle.split(' ').filter(Boolean);
+    const tokenScore = tokenOverlapScore(termTokens, titleTokens);
+
+    let bestWindowScore = 0;
+    if (nTitle.length <= nTerm.length) {
+      bestWindowScore = levenshteinSimilarity(nTerm, nTitle);
+    } else {
+      const winLen = nTerm.length;
+      for (let i = 0; i + winLen <= nTitle.length; i++) {
+        const score = levenshteinSimilarity(nTerm, nTitle.slice(i, i + winLen));
+        if (score > bestWindowScore) bestWindowScore = score;
+      }
+    }
+
+    const combined = Math.max(tokenScore * 0.9, 0.5 * tokenScore + 0.5 * bestWindowScore);
+    return Math.round(Math.min(1, Math.max(0, combined)) * 100);
+  }
+
+  function similarityTier(percent) {
+    if (percent >= MATCH_THRESHOLD) return 'high';
+    if (percent >= 50) return 'medium';
+    return 'low';
   }
 
   // ------------------------------------------------------------------ //
@@ -125,8 +192,11 @@
     node.querySelector('.result-title').title = result.title || '';
     node.querySelector('.result-price').textContent = result.price || '—';
     node.querySelector('.result-seller-count').textContent = result.sellerCountText || '';
-    if (result.isMatch) {
-      node.querySelector('.badge-match').hidden = false;
+    const similarityBadge = node.querySelector('.badge-similarity');
+    const tier = similarityTier(result.similarity);
+    similarityBadge.textContent = `%${result.similarity} yakınlık`;
+    similarityBadge.classList.add('badge-' + tier);
+    if (tier === 'high') {
       node.classList.add('is-match');
     }
     renderSellersInto(node.querySelector('.result-sellers'), result);
@@ -194,17 +264,17 @@
     const first = results[0];
     if (first) {
       chips.push(
-        first.isMatch
-          ? { text: 'İlk sonuçta aranan değer eşleşti', type: 'success' }
-          : { text: 'İlk sonuçta aranan değer eşleşmedi', type: 'danger' }
+        first.similarity >= MATCH_THRESHOLD
+          ? { text: `İlk sonuç %${first.similarity} oranında eşleşti`, type: 'success' }
+          : { text: `İlk sonuç yalnızca %${first.similarity} oranında eşleşti`, type: 'danger' }
       );
     }
-    if (results.slice(1).some((r) => r.isMatch)) {
+    if (results.slice(1).some((r) => r.similarity >= MATCH_THRESHOLD)) {
       chips.push({ text: 'Aranan değer başka sonuçlarda da geçiyor', type: 'default' });
     }
-    const nonMatching = results.filter((r) => !r.isMatch).length;
+    const nonMatching = results.filter((r) => r.similarity < MATCH_THRESHOLD).length;
     if (nonMatching > 0) {
-      chips.push({ text: `${nonMatching} farklı/eşleşmeyen ürün listelendi`, type: 'default' });
+      chips.push({ text: `${nonMatching} farklı/düşük yakınlıklı ürün listelendi`, type: 'default' });
     }
     return chips;
   }
@@ -232,7 +302,7 @@
     const response = await api.search(term);
     const results = (response.results || []).map((r) => ({
       ...r,
-      isMatch: isMatch(term, r.title),
+      similarity: computeSimilarity(term, r.title),
       sellers: [],
       sellersLoading: false,
       sellersError: false,
