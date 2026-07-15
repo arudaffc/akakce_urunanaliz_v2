@@ -97,9 +97,9 @@
     return 'low';
   }
 
-  // İlk sonuç için: başlık yakınlığı ile ürün detay sayfası içeriğindeki
-  // yakınlığın en yüksek değerini kullan (içerikte kod/ad geçiyorsa yükselir).
-  function recomputeFirstSimilarity(term, result, contentText) {
+  // Başlık yakınlığı ile ürün detay sayfası içeriğindeki yakınlığın
+  // en yüksek değerini kullan (içerikte kod/ad geçiyorsa yükselir).
+  function recomputeSimilarity(term, result, contentText) {
     const titleSim = computeSimilarity(term, result.title || '');
     const contentSim = contentText ? computeSimilarity(term, contentText) : 0;
     result.similarityTitle = titleSim;
@@ -120,11 +120,11 @@
     }
 
     const tier = similarityTier(result.similarity);
-    similarityBadge.textContent = result.similarityUsesContent
+    similarityBadge.textContent = result.similarityScannedContent
       ? `%${result.similarity} yakınlık (içerik)`
       : `%${result.similarity} yakınlık`;
-    similarityBadge.title = result.similarityUsesContent
-      ? `Başlık: %${result.similarityTitle ?? result.similarity}, detay içeriği: %${result.similarityContent}`
+    similarityBadge.title = result.similarityScannedContent
+      ? `Başlık: %${result.similarityTitle ?? result.similarity}, detay içeriği: %${result.similarityContent ?? 0}`
       : '';
     similarityBadge.classList.add('badge-' + tier);
     if (row) row.classList.toggle('is-match', tier === 'high');
@@ -266,22 +266,29 @@
     applySimilarityBadge(similarityBadge, result, row);
   }
 
-  function finalizeFirstSimilarity(term, result, contentText) {
+  function finalizeSimilarity(term, result, contentText) {
+    result.similarityScannedContent = true;
     if (contentText) {
-      recomputeFirstSimilarity(term, result, contentText);
+      recomputeSimilarity(term, result, contentText);
     } else {
       result.similarity = computeSimilarity(term, result.title || '');
+      result.similarityTitle = result.similarity;
+      result.similarityContent = 0;
       result.similarityUsesContent = false;
     }
     result.similarityLoading = false;
   }
 
-  function finalizeStuckFirstSimilarity(term, results, containerEl, summaryEl) {
-    const first = results[0];
-    if (!first || !first.similarityLoading) return;
-    finalizeFirstSimilarity(term, first, '');
-    updateSimilarityRowInPlace(containerEl, 0, first);
-    if (summaryEl) {
+  function finalizeStuckSimilarity(term, results, containerEl, summaryEl) {
+    let changed = false;
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
+      if (!result.similarityLoading) continue;
+      finalizeSimilarity(term, result, '');
+      updateSimilarityRowInPlace(containerEl, i, result);
+      changed = true;
+    }
+    if (changed && summaryEl) {
       renderSummary(summaryEl, buildSummary(results, false));
     }
   }
@@ -292,7 +299,9 @@
     for (let i = 0; i < results.length; i++) {
       if (results[i].detailUrl) {
         results[i].sellersLoading = true;
+        results[i].similarityLoading = true;
         updateSellerRowInPlace(containerEl, i, results[i]);
+        updateSimilarityRowInPlace(containerEl, i, results[i]);
       }
     }
 
@@ -307,25 +316,23 @@
         result.sellersTotalCount = res.totalCount || 0;
         result.sellersLoading = false;
         result.sellersError = !!(res.cloudflareBlocked && result.sellers.length === 0);
-        if (i === 0 && term) {
-          finalizeFirstSimilarity(term, result, res.contentText || '');
-          updateSimilarityRowInPlace(containerEl, 0, result);
-          if (summaryEl) {
-            renderSummary(summaryEl, buildSummary(results, false));
-          }
+        if (term) {
+          finalizeSimilarity(term, result, res.contentText || '');
+          updateSimilarityRowInPlace(containerEl, i, result);
         }
       } catch (e) {
         result.sellersLoading = false;
         result.sellersError = true;
-        if (i === 0 && term) {
-          finalizeFirstSimilarity(term, result, '');
-          updateSimilarityRowInPlace(containerEl, 0, result);
-          if (summaryEl) {
-            renderSummary(summaryEl, buildSummary(results, false));
-          }
+        if (term) {
+          finalizeSimilarity(term, result, '');
+          updateSimilarityRowInPlace(containerEl, i, result);
         }
       }
       updateSellerRowInPlace(containerEl, i, result);
+    }
+
+    if (term && summaryEl) {
+      renderSummary(summaryEl, buildSummary(results, false));
     }
   }
 
@@ -347,13 +354,13 @@
         chips.push(
           first.similarity >= MATCH_THRESHOLD
             ? {
-                text: first.similarityUsesContent
+                text: first.similarityScannedContent
                   ? `İlk sonuç detay içeriğinde %${first.similarity} oranında eşleşti`
                   : `İlk sonuç %${first.similarity} oranında eşleşti`,
                 type: 'success',
               }
             : {
-                text: first.similarityUsesContent
+                text: first.similarityScannedContent
                   ? `İlk sonuç detay içeriğinde yalnızca %${first.similarity} oranında eşleşti`
                   : `İlk sonuç yalnızca %${first.similarity} oranında eşleşti`,
                 type: 'danger',
@@ -361,10 +368,14 @@
         );
       }
     }
-    if (results.slice(1).some((r) => r.similarity >= MATCH_THRESHOLD)) {
+    if (results.some((r) => r.similarityLoading)) {
+      chips.push({ text: 'Bazı sonuçların yakınlığı hesaplanıyor…', type: 'default' });
+    }
+    if (results.slice(1).some((r) => !r.similarityLoading && r.similarity >= MATCH_THRESHOLD)) {
       chips.push({ text: 'Aranan değer başka sonuçlarda da geçiyor', type: 'default' });
     }
-    const nonMatching = results.filter((r) => r.similarity < MATCH_THRESHOLD).length;
+    const finalized = results.filter((r) => !r.similarityLoading);
+    const nonMatching = finalized.filter((r) => r.similarity < MATCH_THRESHOLD).length;
     if (nonMatching > 0) {
       chips.push({ text: `${nonMatching} farklı/düşük yakınlıklı ürün listelendi`, type: 'default' });
     }
@@ -392,16 +403,17 @@
   // ------------------------------------------------------------------ //
   async function performSearch(term) {
     const response = await api.search(term);
-    const results = (response.results || []).map((r, index) => {
+    const results = (response.results || []).map((r) => {
       const base = {
         ...r,
         sellers: [],
         sellersLoading: false,
         sellersError: false,
         similarityUsesContent: false,
+        similarityScannedContent: false,
       };
-      // İlk sonuçta detay sayfası varsa yakınlık, içerik taranana kadar bekletilir.
-      if (index === 0 && r.detailUrl) {
+      // Detay sayfası olan tüm sonuçlarda yakınlık, içerik taranana kadar bekletilir.
+      if (r.detailUrl) {
         return { ...base, similarityLoading: true, similarity: 0 };
       }
       return {
@@ -447,7 +459,7 @@
       if (!outcome.cloudflareBlocked && outcome.results.length > 0) {
         await enrichSellers(outcome.results, singleResultsEl, { term, summaryEl: singleSummaryEl });
       } else {
-        finalizeStuckFirstSimilarity(term, outcome.results, singleResultsEl, singleSummaryEl);
+        finalizeStuckSimilarity(term, outcome.results, singleResultsEl, singleSummaryEl);
       }
     } catch (err) {
       singleResultsEl.innerHTML = '';
@@ -553,7 +565,7 @@
         if (!outcome.cloudflareBlocked && outcome.results.length > 0) {
           await enrichSellers(outcome.results, group.bodyResultsEl, { term, summaryEl: group.summaryEl });
         } else {
-          finalizeStuckFirstSimilarity(term, outcome.results, group.bodyResultsEl, group.summaryEl);
+          finalizeStuckSimilarity(term, outcome.results, group.bodyResultsEl, group.summaryEl);
         }
       } catch (err) {
         group.setStatus('Hata: ' + err.message, 'error');
