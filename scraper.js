@@ -188,6 +188,7 @@ const EXTRACT_SELLERS_JS = `(() => {
 
   let sellers = [];
   let totalCount = 0;
+  const contentParts = [];
 
   // Strateji 1 (birincil): sayfaya gömülü Astro island JSON verisi.
   // Ürün detay sayfasındaki "initialPgList" alanı, tüm satıcı tekliflerini
@@ -198,12 +199,30 @@ const EXTRACT_SELLERS_JS = `(() => {
     for (const root of islands) {
       if (Array.isArray(root.initialPgList) && root.initialPgList.length > 0) {
         sellers = root.initialPgList.map((o) => (o && o.vdName) || '').filter(Boolean);
+        for (const o of root.initialPgList) {
+          if (o && o.pgName) contentParts.push(o.pgName);
+          if (o && o.vdName) contentParts.push(o.vdName);
+          if (o && o.pgNick) contentParts.push(o.pgNick);
+        }
       }
       if (root.metadata && typeof root.metadata.countOfPrCode === 'number') {
         totalCount = root.metadata.countOfPrCode;
       }
+      if (root.metadata) {
+        const m = root.metadata;
+        ['name', 'h1', 'descriptiveText', 'descriptiveTextShort', 'mkName', 'title'].forEach((k) => {
+          if (m[k]) contentParts.push(String(m[k]));
+        });
+      }
+      if (root.spotPg && root.spotPg.pgName) contentParts.push(root.spotPg.pgName);
+      if (root.spotPg && root.spotPg.vdName) contentParts.push(root.spotPg.vdName);
     }
   } catch (e) {}
+
+  const h1 = document.querySelector('#pd_v8 h1, .pdt_v8 h1, h1');
+  if (h1) contentParts.push(textOf(h1));
+
+  const contentText = contentParts.join(' ');
 
   // Strateji 2 (yedek): görsel alt metni + satır bağlamı sezgisi
   if (sellers.length === 0) {
@@ -227,7 +246,7 @@ const EXTRACT_SELLERS_JS = `(() => {
     }
   }
 
-  return { sellers: sellers.slice(0, 30), totalCount };
+  return { sellers: sellers.slice(0, 30), totalCount, contentText };
 })()`;
 
 class AkakceScraper {
@@ -317,20 +336,21 @@ class AkakceScraper {
       try {
         await win.loadURL(detailUrl);
       } catch (e) {
-        return { detailUrl, sellers: [], totalCount: 0, cloudflareBlocked: false, error: e.message };
+        return { detailUrl, sellers: [], totalCount: 0, contentText: '', cloudflareBlocked: false, error: e.message };
       }
       const waitResult = await this._waitForReadyState(`document.body.innerText.length > 800`);
-      let data = { sellers: [], totalCount: 0 };
+      let data = { sellers: [], totalCount: 0, contentText: '' };
       try {
         data = await win.webContents.executeJavaScript(EXTRACT_SELLERS_JS);
       } catch (e) {
-        data = { sellers: [], totalCount: 0 };
+        data = { sellers: [], totalCount: 0, contentText: '' };
       }
       const sellers = data.sellers || [];
       return {
         detailUrl,
         sellers,
         totalCount: data.totalCount || 0,
+        contentText: data.contentText || '',
         cloudflareBlocked: !waitResult.ok && sellers.length === 0,
       };
     });
