@@ -186,6 +186,22 @@ const EXTRACT_SELLERS_JS = `(() => {
   ${DESERIALIZE_HELPERS_JS}
   function textOf(el) { return (el && el.textContent || '').replace(/\\s+/g, ' ').trim(); }
 
+  function normKey(s) {
+    return (s || '').toLocaleLowerCase('tr-TR').replace(/\\s+/g, ' ').trim();
+  }
+
+  // Pazaryeri (vdName) ile mağaza adını (pgNick) birleştirir.
+  // Akakçe arayüzünde "n11 / teknobiyotik" şeklinde gösterildiği gibi.
+  function formatSellerLabel(offer) {
+    if (!offer) return '';
+    const platform = String(offer.vdName || '').trim();
+    const store = String(offer.pgNick || '').trim();
+    if (platform && store && normKey(platform) !== normKey(store)) {
+      return platform + ' / ' + store;
+    }
+    return platform || store;
+  }
+
   let sellers = [];
   let totalCount = 0;
   const contentParts = [];
@@ -198,7 +214,7 @@ const EXTRACT_SELLERS_JS = `(() => {
     const islands = readIslandData();
     for (const root of islands) {
       if (Array.isArray(root.initialPgList) && root.initialPgList.length > 0) {
-        sellers = root.initialPgList.map((o) => (o && o.vdName) || '').filter(Boolean);
+        sellers = root.initialPgList.map((o) => formatSellerLabel(o)).filter(Boolean);
         for (const o of root.initialPgList) {
           if (o && o.pgName) contentParts.push(o.pgName);
           if (o && o.vdName) contentParts.push(o.vdName);
@@ -224,25 +240,30 @@ const EXTRACT_SELLERS_JS = `(() => {
 
   const contentText = contentParts.join(' ');
 
-  // Strateji 2 (yedek): görsel alt metni + satır bağlamı sezgisi
+  // Strateji 2 (yedek): teklif satırı metninden platform / mağaza adı
   if (sellers.length === 0) {
     const seen = new Set();
-    const imgs = Array.from(document.querySelectorAll('img[alt]'));
-    for (const img of imgs) {
-      const alt = (img.getAttribute('alt') || '').trim();
+    const rows = Array.from(document.querySelectorAll('li, tr, div[class*="offer"], div[class*="slc"]'));
+    for (const row of rows) {
+      const rowText = textOf(row);
+      if (!/sat[ıi]c[ıi]ya git|sepete ekle|\\d+[.,]\\d{2}\\s*TL/i.test(rowText)) continue;
+      const slashMatch = rowText.match(/Sat[ıi]c[ıi]ya Git\\s+([^\\d]+?)\\s*\\/\\s*([A-Za-z0-9ğüşıöçĞÜŞİÖÇ._ -]{2,40})/i);
+      if (slashMatch) {
+        const label = slashMatch[1].trim() + ' / ' + slashMatch[2].trim();
+        if (!seen.has(normKey(label))) {
+          seen.add(normKey(label));
+          sellers.push(label);
+        }
+        continue;
+      }
+      const img = row.querySelector('img[alt]');
+      const alt = img ? (img.getAttribute('alt') || '').trim() : '';
       if (!alt || alt.length < 2 || alt.length > 40 || /^\\d+$/.test(alt)) continue;
       if (/akak[cç]e|logo|icon|fiyat grafi/i.test(alt)) continue;
-      const row =
-        img.closest('li, tr, div[class*="satici"], div[class*="shop"], div[class*="offer"], div[class*="slc"]') ||
-        img.parentElement;
-      if (!row) continue;
-      const rowText = textOf(row);
-      const looksLikeOfferRow =
-        /sat[ıi]c[ıi]ya git|sepete ekle|\\d+[.,]\\d{2}\\s*TL/i.test(rowText) ||
-        !!row.querySelector('a[href*="akakce.com/c/"], a[href*="/r/"]');
-      if (!looksLikeOfferRow || seen.has(alt)) continue;
-      seen.add(alt);
-      sellers.push(alt);
+      if (!seen.has(normKey(alt))) {
+        seen.add(normKey(alt));
+        sellers.push(alt);
+      }
     }
   }
 
